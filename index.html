@@ -1,0 +1,21 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>看板 · Trello 风格</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <h1>📋 看板</h1>
+    <span class="subtitle">Trello 风格 · 纯原生 HTML/CSS/JS · 数据保存在 localStorage</span>
+    <button id="reset-btn" class="reset-btn" type="button">重置为示例数据</button>
+  </header>
+
+  <!-- 列表内容由 app.js 动态渲染 -->
+  <main id="board" class="board" aria-label="看板"></main>
+
+  <script src="app.js"></script>
+</body>
+</html>

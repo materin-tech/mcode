@@ -1,0 +1,52 @@
+{
+  "name": "@materin-tech/materin-mcode",
+  "version": "0.1.8",
+  "description": "MCode — terminal AI coding agent (Claude Code style TUI, OpenAI Responses API)",
+  "type": "module",
+  "bin": {
+    "mcode": "./bin.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsx bin.js",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "prepublishOnly": "npm run typecheck && npm test && npm run build"
+  },
+  "dependencies": {
+    "ink": "^5.2.0",
+    "react": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "ink-testing-library": "^4.0.0",
+    "tsup": "^8.3.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  },
+  "files": [
+    "dist",
+    "bin.js",
+    "README.md",
+    "LICENSE",
+    "assets"
+  ],
+  "keywords": [
+    "ai",
+    "agent",
+    "cli",
+    "tui",
+    "coding",
+    "openai"
+  ],
+  "license": "MIT",
+  "author": "Materin-tech",
+  "publishConfig": {
+    "access": "public"
+  }
+}
