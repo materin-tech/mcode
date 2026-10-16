@@ -8,6 +8,7 @@ import type { ToolResult } from '../tools/types.js';
 
 export type ChatItem =
   | { kind: 'user'; text: string }
+  | { kind: 'reasoning'; text: string }
   | { kind: 'thought'; seconds: number }
   | { kind: 'activity'; text: string }
   | { kind: 'assistant'; text: string }

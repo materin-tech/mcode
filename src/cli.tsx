@@ -272,6 +272,9 @@ async function main(): Promise<void> {
           case 'text_delta':
             handle.emit({ type: 'text_delta', text: event.text });
             break;
+          case 'reasoning_delta':
+            handle.emit({ type: 'reasoning_delta', text: event.text });
+            break;
           case 'tool_start':
             handle.emit({ type: 'tool_start', name: event.name, args: event.args });
             break;

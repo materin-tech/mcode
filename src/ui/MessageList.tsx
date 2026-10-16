@@ -17,6 +17,14 @@ function MessageBlock({ item }: { item: ChatItem }): React.ReactElement {
           <Text>{item.text}</Text>
         </Box>
       );
+    case 'reasoning':
+      return (
+        <Box paddingX={1}>
+          <Text dimColor italic>
+            ✻ {item.text}
+          </Text>
+        </Box>
+      );
     case 'thought':
       return (
         <Box paddingX={1}>

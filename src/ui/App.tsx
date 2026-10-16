@@ -36,6 +36,7 @@ export interface TurnHandle {
 
 export type TurnEvent =
   | { type: 'text_delta'; text: string }
+  | { type: 'reasoning_delta'; text: string }
   | { type: 'tool_start'; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; name: string; ok: boolean; detail: string }
   | { type: 'usage'; usage: { inputTokens: number; outputTokens: number; cachedTokens: number } }
@@ -73,8 +74,11 @@ export function App(props: AppProps): React.ReactElement {
   const [permissionTool, setPermissionTool] = useState<string | null>(null);
   const [modelPicker, setModelPicker] = useState<{ open: boolean; index: number }>({ open: false, index: 0 });
   const [goal, setGoalState] = useState<string | null>(null);
+  const [phase, setPhase] = useState<'thinking' | 'writing'>('thinking');
+  const [queued, setQueued] = useState<string | null>(null);
   const assistantBufRef = useRef('');
   const activityRef = useRef<ActivityCounts>({});
+  const reasoningSeenRef = useRef(false);
   const stageStartRef = useRef<number>(Date.now());
   const turnStartRef = useRef<number>(Date.now());
 
@@ -117,12 +121,25 @@ export function App(props: AppProps): React.ReactElement {
       setBusy(true);
       assistantBufRef.current = '';
       activityRef.current = {};
+      reasoningSeenRef.current = false;
+      setPhase('thinking');
       stageStartRef.current = Date.now();
       turnStartRef.current = Date.now();
       const controller = new AbortController();
       abortRef.current = controller;
       const emit = (event: TurnEvent): void => {
         switch (event.type) {
+          case 'reasoning_delta': {
+            reasoningSeenRef.current = true;
+            setItems((prev) => {
+              const last = prev[prev.length - 1];
+              if (last && last.kind === 'reasoning') {
+                return [...prev.slice(0, -1), { kind: 'reasoning', text: last.text + event.text }];
+              }
+              return [...prev, { kind: 'reasoning', text: event.text }];
+            });
+            break;
+          }
           case 'text_delta': {
             const isFirstOfStage = assistantBufRef.current.length === 0;
             assistantBufRef.current += event.text;
@@ -136,10 +153,7 @@ export function App(props: AppProps): React.ReactElement {
                   activityRef.current = {};
                 }
                 // thinking time before the first token of the stage
-                const thoughtSecs = Math.floor((Date.now() - stageStartRef.current) / 1000);
-                if (thoughtSecs >= 1) {
-                  next = [...next, { kind: 'thought', seconds: thoughtSecs }];
-                }
+
               }
               const last = next[next.length - 1];
               const text = assistantBufRef.current;
@@ -274,7 +288,12 @@ export function App(props: AppProps): React.ReactElement {
         hint={props.t('bannerHint')}
       />
       <MessageList items={items} />
-      <StatusBar thinking={busy} runningCommand={goal ? '/goal active' : null} thinkingLabel={props.t('thinking')} />
+      <StatusBar
+        active={busy}
+        startedAt={stageStartRef.current}
+        phase={phase}
+        runningCommand={goal ? '/goal active' : null}
+      />
       {permissionTool !== null ? (
         <PermissionPrompt
           toolName={permissionTool}

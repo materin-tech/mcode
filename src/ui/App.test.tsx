@@ -372,3 +372,24 @@ describe('staged output rendering (terminal simulation)', () => {
     instance.unmount();
   }, 5000);
 });
+
+
+describe('reasoning display (terminal simulation)', () => {
+  it('streams thinking content and suppresses the plain Thought-for-Ns line', async () => {
+    const runTurn = vi.fn(async (input: string, handle: TurnHandle) => {
+      handle.emit({ type: 'reasoning_delta', text: '用户要赛车游戏，先写 index.html' });
+      handle.emit({ type: 'text_delta', text: '开始实现' });
+      handle.emit({ type: 'done', reply: '' });
+    });
+    const instance = await renderApp(baseProps({ runTurn }));
+    await typeText(instance, 'go');
+    await pressKey(instance, '\r');
+    await new Promise((r) => setTimeout(r, 200));
+    const frame = lastFrame(instance);
+    expect(frame).toContain('✻');
+    expect(frame).toContain('用户要赛车游戏');
+    expect(frame).toContain('开始实现');
+    expect(frame).not.toContain('Thought for');
+    instance.unmount();
+  });
+});

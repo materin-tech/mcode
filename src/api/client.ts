@@ -33,6 +33,7 @@ export interface UsageInfo {
 
 export type StreamEvent =
   | { type: 'text_delta'; text: string }
+  | { type: 'reasoning_delta'; text: string }
   | { type: 'tool_call'; call: ToolCall }
   | { type: 'done'; usage: UsageInfo | null };
 
@@ -65,6 +66,8 @@ export async function* streamResponse(options: {
   userInput: string;
   tools: ToolSpec[];
   signal?: AbortSignal;
+  /** Abort when no stream data arrives for this long (stall guard). */
+  idleTimeoutMs?: number;
 }): AsyncGenerator<StreamEvent> {
   const body = {
     model: options.model,
@@ -89,11 +92,9 @@ export async function* streamResponse(options: {
   };
 
   const url = `${options.baseURL.replace(/\/+$/, '')}/responses`;
-  // Hard wall-clock guard: a hung server stream must never block the agent forever.
-  const timeoutSignal = AbortSignal.any([
-    ...(options.signal ? [options.signal] : []),
-    AbortSignal.timeout(300_000),
-  ]);
+  // No timeouts, Claude Code style: only the user's ESC signal aborts a
+  // running request. Long thinking / long generation must never be killed
+  // by our own timers.
   let res: Response;
   try {
     res = await fetch(url, {
@@ -103,7 +104,7 @@ export async function* streamResponse(options: {
         authorization: `Bearer ${options.apiKey}`,
       },
       body: JSON.stringify(body),
-      signal: timeoutSignal,
+      signal: options.signal,
     });
   } catch (err) {
     throw new ApiError(`network error: ${err instanceof Error ? err.message : String(err)}`);
@@ -113,7 +114,7 @@ export async function* streamResponse(options: {
     throw new ApiError(`API ${res.status}: ${text.slice(0, 500)}`, res.status);
   }
 
-  for await (const event of parseSSE(res.body)) {
+  for await (const event of parseSSE(res.body, options.idleTimeoutMs)) {
     const parsed = safeJson(event.data);
     if (!parsed) continue;
     const type = parsed['type'] as string | undefined;
@@ -122,6 +123,11 @@ export async function* streamResponse(options: {
       const delta = parsed['delta'];
       if (typeof delta === 'string' && delta.length > 0) {
         yield { type: 'text_delta', text: delta };
+      }
+    } else if (type === 'response.reasoning_summary_text.delta' || type === 'response.reasoning_text.delta') {
+      const delta = parsed['delta'];
+      if (typeof delta === 'string' && delta.length > 0) {
+        yield { type: 'reasoning_delta', text: delta };
       }
     } else if (type === 'response.output_item.done') {
       const item = parsed['item'] as Record<string, unknown> | undefined;
@@ -152,12 +158,33 @@ export async function* streamResponse(options: {
   }
 }
 
-async function* parseSSE(body: ReadableStream<Uint8Array>): AsyncGenerator<{ data: string }> {
+async function* parseSSE(body: ReadableStream<Uint8Array>, idleTimeoutMs?: number): AsyncGenerator<{ data: string }> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   while (true) {
-    const { done, value } = await reader.read();
+    let result: ReadableStreamReadResult<Uint8Array>;
+    if (idleTimeoutMs === undefined) {
+      result = await reader.read();
+    } else {
+      // Optional stall guard (off by default): abort when no bytes arrive.
+      let idleTimer: ReturnType<typeof setTimeout> | undefined;
+      const idle = new Promise<never>((_, reject) => {
+        idleTimer = setTimeout(
+          () => reject(new ApiError(`stream idle for ${Math.round(idleTimeoutMs / 1000)}s — server stalled`, undefined)),
+          idleTimeoutMs,
+        );
+      });
+      try {
+        result = await Promise.race([reader.read(), idle]);
+      } catch (err) {
+        clearTimeout(idleTimer);
+        await reader.cancel().catch(() => {});
+        throw err;
+      }
+      clearTimeout(idleTimer);
+    }
+    const { done, value } = result;
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     let sep: number;

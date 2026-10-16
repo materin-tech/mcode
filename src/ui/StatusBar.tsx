@@ -4,18 +4,33 @@
  * SPDX-License-Identifier: MIT
  */
 
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { Box, Text } from 'ink';
 
+const VERBS = ['Brewing', 'Simmering', 'Caramelizing', 'Marinating', 'Cooking', 'Perfuming'];
+
+/**
+ * Claude Code style live status line: `· Caramelizing… (19s · thinking)`.
+ * Ticks every second while active; verb cycles every 4s.
+ */
 export function StatusBar(props: {
-  thinking: boolean;
+  active: boolean;
+  startedAt: number;
+  phase: 'thinking' | 'writing';
   runningCommand: string | null;
-  thinkingLabel: string;
 }): React.ReactElement | null {
-  if (!props.thinking && !props.runningCommand) return null;
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!props.active) return;
+    const id = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [props.active]);
+  if (!props.active && !props.runningCommand) return null;
+  const secs = props.active ? Math.max(0, Math.floor((Date.now() - props.startedAt) / 1000)) : 0;
+  const verb = VERBS[Math.floor(secs / 4) % VERBS.length]!;
   return (
     <Box justifyContent="space-between" paddingX={1}>
-      <Text color="gray">{props.thinking ? props.thinkingLabel : ''}</Text>
+      <Text dimColor>{props.active ? `· ${verb}… (${secs}s · ${props.phase})` : ''}</Text>
       {props.runningCommand ? <Text color="magenta">{props.runningCommand}</Text> : null}
     </Box>
   );

@@ -19,6 +19,7 @@ import {toToolSpecs} from "../tools/registry";
 
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
+  | { type: 'reasoning_delta'; text: string }
   | { type: 'tool_start'; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; name: string; result: ToolResult }
   | { type: 'usage'; usage: UsageInfo }
@@ -107,6 +108,9 @@ export async function runAgentTurn(
           case 'text_delta':
             reply += event.text;
             onEvent({ type: 'text_delta', text: event.text });
+            break;
+          case 'reasoning_delta':
+            onEvent({ type: 'reasoning_delta', text: event.text });
             break;
           case 'tool_call':
             calls.push(event.call);
