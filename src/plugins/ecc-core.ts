@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import type { AgentDefinition } from '../agent/subagent.js';
@@ -87,4 +87,63 @@ export function eccSkillsDir(): string | null {
   const dir = eccCoreDir();
   if (dir && existsSync(join(dir, 'skills'))) return join(dir, 'skills');
   return null;
+}
+
+import { homedir } from 'node:os';
+
+/**
+ * Materialize bundled ECC assets into ~/.mcode so users can see, edit and
+ * delete them. Idempotent: skipped once the marker file exists, and existing
+ * user files are never overwritten.
+ */
+export function materializeEccCore(): { agents: number; skills: number } | null {
+  const dir = eccCoreDir();
+  if (!dir) return null;
+  const home = join(homedir(), '.mcode');
+  const marker = join(home, '.ecc-materialized');
+  if (existsSync(marker)) return null;
+  let agents = 0;
+  let skills = 0;
+  const agentsTarget = join(home, 'agents');
+  const skillsTarget = join(home, 'skills');
+  mkdirSync(agentsTarget, { recursive: true });
+  mkdirSync(skillsTarget, { recursive: true });
+  for (const file of readdirSync(join(dir, 'agents'))) {
+    if (!file.endsWith('.md')) continue;
+    const target = join(agentsTarget, file);
+    if (!existsSync(target)) {
+      copyFileSync(join(dir, 'agents', file), target);
+      agents++;
+    }
+  }
+  for (const entry of readdirSync(join(dir, 'skills'))) {
+    const srcFile = join(dir, 'skills', entry, 'SKILL.md');
+    if (!existsSync(srcFile)) continue;
+    const targetDir = join(skillsTarget, entry);
+    mkdirSync(targetDir, { recursive: true });
+    const target = join(targetDir, 'SKILL.md');
+    if (!existsSync(target)) {
+      copyFileSync(srcFile, target);
+      skills++;
+    }
+  }
+  writeFileSync(marker, `ecc-core materialized at ${new Date().toISOString()}\n`, 'utf8');
+  return { agents, skills };
+}
+
+/** Agents the user keeps in ~/.mcode/agents/*.md (highest override priority). */
+export function loadUserAgents(): AgentDefinition[] {
+  const dir = join(homedir(), '.mcode', 'agents');
+  if (!existsSync(dir)) return [];
+  const agents: AgentDefinition[] = [];
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith('.md')) continue;
+    try {
+      const parsed = parseEccAgent(readFileSync(join(dir, file), 'utf8'), file.replace(/\.md$/, ''));
+      if (parsed) agents.push(parsed);
+    } catch {
+      // skip
+    }
+  }
+  return agents;
 }

@@ -177,6 +177,36 @@ export const BUILTIN_COMMANDS: Command[] = [
     },
   },
   {
+    name: 'agents',
+    description: '列出可用 subagent / list agents',
+    handler: (_args, ctx) => {
+      const agents = ctx.listAgents();
+      ctx.print(
+        [
+          `Available subagents (${agents.length}) — dispatch via task tool or auto-decomposition:`,
+          ...agents.map((a) => `  • ${a.name} [${a.source}]: ${a.description.slice(0, 100)}`),
+        ].join('\n'),
+      );
+    },
+  },
+  {
+    name: 'skills',
+    description: '列出可用 skill / list skills',
+    handler: (_args, ctx) => {
+      const skills = ctx.listSkills();
+      const bySource = new Map<string, number>();
+      for (const s of skills) bySource.set(s.source, (bySource.get(s.source) ?? 0) + 1);
+      const summary = [...bySource.entries()].map(([k, v]) => `${k}: ${v}`).join(', ');
+      ctx.print(
+        [
+          `Available skills (${skills.length}) [${summary}] — /<skill-name> to run, or the model pulls via the skill tool:`,
+          ...skills.slice(0, 40).map((sk) => `  • ${sk.name} [${sk.source}]`),
+          ...(skills.length > 40 ? [`  … and ${skills.length - 40} more (see '/' completion panel)`] : []),
+        ].join('\n'),
+      );
+    },
+  },
+  {
     name: 'exit',
     description: '退出 / exit',
     handler: () => {
@@ -199,7 +229,6 @@ const STUBS: Array<[string, string]> = [
   ['copy', '复制最后回复 / copy last reply'],
   ['config', '配置面板 / config panel'],
   ['permissions', '权限规则 / permission rules'],
-  ['agents', 'subagent 管理 / subagents'],
   ['hooks', 'hook 管理 / hooks'],
   ['mcp', 'MCP 管理 / MCP servers'],
 

@@ -62,20 +62,26 @@ export interface AppProps {
   onResumeList?: () => string[];
   /** Sync the session goal to the agent layer. */
   onGoalChange?: (text: string | null) => void;
+  /** Transcript restored from a resumed session. */
+  initialItems?: ChatItem[];
+  listAgents: () => Array<{ name: string; description: string; source: string }>;
+  listSkills: () => Array<{ name: string; source: string }>;
 }
 
 export function App(props: AppProps): React.ReactElement {
-  const [items, setItems] = useState<ChatItem[]>([]);
+  const [items, setItems] = useState<ChatItem[]>(props.initialItems ?? []);
   const [busy, setBusy] = useState(false);
   const [modeIndex, setModeIndex] = useState(MODES.indexOf(props.config.defaultMode));
   const modeRef = useRef<Mode>(props.config.defaultMode);
   const abortRef = useRef<AbortController | null>(null);
+  const runTurnRef = useRef<((input: string) => void) | null>(null);
   const pendingConfirmRef = useRef<((allow: boolean) => void) | null>(null);
   const [permissionTool, setPermissionTool] = useState<string | null>(null);
   const [modelPicker, setModelPicker] = useState<{ open: boolean; index: number }>({ open: false, index: 0 });
   const [goal, setGoalState] = useState<string | null>(null);
   const [phase, setPhase] = useState<'thinking' | 'writing'>('thinking');
   const [queued, setQueued] = useState<string | null>(null);
+  const [reasoningExpanded, setReasoningExpanded] = useState(false);
   const assistantBufRef = useRef('');
   const activityRef = useRef<ActivityCounts>({});
   const reasoningSeenRef = useRef(false);
@@ -101,6 +107,11 @@ export function App(props: AppProps): React.ReactElement {
       setModelPicker({ open: false, index: 0 });
     }
   }, { isActive: modelPicker.open });
+  useInput((input, key) => {
+    if (key.ctrl && input === 'o') {
+      setReasoningExpanded((v) => !v);
+    }
+  }, { isActive: true });
 
   const print = useCallback((text: string) => {
     setItems((prev) => [...prev, { kind: 'system', text }]);
@@ -209,7 +220,15 @@ export function App(props: AppProps): React.ReactElement {
         });
       props
         .runTurn(input, { emit, confirm, signal: controller.signal, getMode: () => modeRef.current })
-        .then(() => setBusy(false))
+        .then(() => {
+          setBusy(false);
+          setQueued((pending) => {
+            if (pending === null) return null;
+            // run the interjection after state settles
+            setTimeout(() => runTurnRef.current?.(pending), 30);
+            return null;
+          });
+        })
         .catch((err: unknown) => {
           print(`✗ ${err instanceof Error ? err.message : String(err)}`);
           setBusy(false);
@@ -217,6 +236,7 @@ export function App(props: AppProps): React.ReactElement {
     },
     [props, print],
   );
+  runTurnRef.current = runTurn;
 
   const handleSubmit = useCallback(
     (input: string) => {
@@ -287,7 +307,7 @@ export function App(props: AppProps): React.ReactElement {
         warning={props.config.activeProvider === null ? props.t('noProviderWarning') : null}
         hint={props.t('bannerHint')}
       />
-      <MessageList items={items} />
+      <MessageList items={items} reasoningExpanded={reasoningExpanded} />
       <StatusBar
         active={busy}
         startedAt={stageStartRef.current}
@@ -307,6 +327,11 @@ export function App(props: AppProps): React.ReactElement {
       {modelPicker.open ? (
         <ModelPicker models={providerModels} selectedIndex={modelPicker.index} />
       ) : null}
+      {queued ? (
+        <Box paddingX={1}>
+          <Text dimColor>⏎ queued: {queued}</Text>
+        </Box>
+      ) : null}
       <InputBox
         inputActive={!modelPicker.open}
         busy={busy}
@@ -315,6 +340,7 @@ export function App(props: AppProps): React.ReactElement {
         commandItems={commandItems}
         listFiles={props.listFiles}
         onSubmit={handleSubmit}
+        onQueue={(text) => setQueued(text)}
         onCycleMode={cycleMode}
         onAbort={() => abortRef.current?.abort()}
       />
@@ -364,6 +390,8 @@ function buildCommandContext(
       if (next !== mode) cycleMode();
     },
     getUsage: props.getUsage,
+    listAgents: props.listAgents,
+    listSkills: props.listSkills,
     startProviderGuide: () => print('run: mcode add_provider <name>'),
     exportSnapshot: (): string | null => props.onSnapshot?.() ?? null,
     runPrompt: (text: string) => runTurn(text),

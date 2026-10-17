@@ -8,7 +8,38 @@ import React from 'react';
 import { Box, Text } from 'ink';
 import type { ChatItem } from './types.js';
 
-function MessageBlock({ item }: { item: ChatItem }): React.ReactElement {
+const REASONING_COLLAPSED_LINES = 5;
+
+function ReasoningBlock({ text, expanded }: { text: string; expanded: boolean }): React.ReactElement {
+  const lines = text.split('\n').filter((l, i, arr) => l.trim().length > 0 || i < arr.length - 1);
+  const total = lines.length;
+  if (expanded) {
+    const shown = lines.slice(-2000); // render safety cap
+    return (
+      <Box paddingX={1} flexDirection="column">
+        <Text dimColor>✻ Thinking ({total} lines · ctrl+o collapse)</Text>
+        {shown.map((line, i) => (
+          <Text dimColor key={i}>  {line}</Text>
+        ))}
+      </Box>
+    );
+  }
+  const tailStart = Math.max(0, total - REASONING_COLLAPSED_LINES);
+  const tail = lines.slice(tailStart);
+  const hidden = tailStart;
+  return (
+    <Box paddingX={1} flexDirection="column">
+      <Text dimColor>
+        ✻ Thinking…{hidden > 0 ? ` (+${hidden} lines` : ''}{hidden > 0 ? ' · ' : ' ('}ctrl+o expand)
+      </Text>
+      {tail.map((line, i) => (
+        <Text dimColor key={i}>  {line}</Text>
+      ))}
+    </Box>
+  );
+}
+
+function MessageBlock({ item, reasoningExpanded }: { item: ChatItem; reasoningExpanded: boolean }): React.ReactElement {
   switch (item.kind) {
     case 'user':
       return (
@@ -18,13 +49,7 @@ function MessageBlock({ item }: { item: ChatItem }): React.ReactElement {
         </Box>
       );
     case 'reasoning':
-      return (
-        <Box paddingX={1}>
-          <Text dimColor italic>
-            ✻ {item.text}
-          </Text>
-        </Box>
-      );
+      return <ReasoningBlock text={item.text} expanded={reasoningExpanded} />;
     case 'thought':
       return (
         <Box paddingX={1}>
@@ -68,11 +93,11 @@ function MessageBlock({ item }: { item: ChatItem }): React.ReactElement {
   }
 }
 
-export function MessageList({ items }: { items: ChatItem[] }): React.ReactElement {
+export function MessageList({ items, reasoningExpanded }: { items: ChatItem[]; reasoningExpanded: boolean }): React.ReactElement {
   return (
     <Box flexDirection="column" flexGrow={1}>
       {items.map((item, index) => (
-        <MessageBlock key={index} item={item} />
+        <MessageBlock key={index} item={item} reasoningExpanded={reasoningExpanded} />
       ))}
     </Box>
   );

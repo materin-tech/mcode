@@ -12,6 +12,19 @@ import { CompletionPanel } from './CompletionPanel.js';
 import { useInputHistory } from './useInputHistory.js';
 import type { TFunction } from './locales.js';
 
+const PASTE_START = '\x1b[200~';
+const PASTE_END = '\x1b[201~';
+
+/** Normalize a pasted chunk: strip markers, keep newlines as real newlines. */
+function normalizePaste(raw: string): string {
+  return raw
+    .split(PASTE_START).join('')
+    .split(PASTE_END).join('')
+    .split('[200~').join('')
+    .split('[201~').join('')
+    .replace(/\r\n?/g, '\n');
+}
+
 function detectTriggerChar(text: string): '/' | '@' | null {
   const slash = text.lastIndexOf('/');
   const at = text.lastIndexOf('@');
@@ -32,6 +45,8 @@ export interface InputBoxProps {
   commandItems: CompletionItem[];
   listFiles: () => CompletionItem[];
   onSubmit: (text: string) => void;
+  /** Enter while busy → queue the message for the next turn boundary. */
+  onQueue: (text: string) => void;
   onCycleMode: () => void;
   onAbort: () => void;
 }
@@ -88,7 +103,15 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
     if (key.return) {
       if (text === '/' || text === '@') return;
       completion.close();
-      if (!props.busy) history.submit();
+      if (props.busy) {
+        const value = text.trim();
+        if (value.length > 0) {
+          history.setText('');
+          props.onQueue(value);
+        }
+        return;
+      }
+      history.submit();
       return;
     }
     if (key.backspace || key.delete) {
@@ -100,6 +123,13 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
       return;
     }
     if (input.length > 0 && !key.ctrl && !key.meta) {
+      // bracketed paste or any multi-line chunk: insert as literal text,
+      // never interpreted as Enter / commands
+      if (input.includes(PASTE_START) || input.includes(PASTE_END) || (input.length > 1 && /[\n\r]/.test(input))) {
+        const cleaned = normalizePaste(input);
+        if (cleaned.length > 0) handleChange(text + cleaned);
+        return;
+      }
       handleChange(text + input);
     }
   }, { isActive: props.inputActive !== false });

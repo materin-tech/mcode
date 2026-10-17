@@ -22,6 +22,8 @@ export interface CommandContext {
   getMode: () => Mode;
   setMode: (mode: Mode) => void;
   getUsage: () => ModelUsage[];
+  listAgents: () => Array<{ name: string; description: string; source: string }>;
+  listSkills: () => Array<{ name: string; source: string }>;
   startProviderGuide: () => void;
   exportSnapshot: () => string | null;
   /** Run a composed prompt (e.g. a skill body) as an agent turn. */

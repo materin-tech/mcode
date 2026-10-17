@@ -66,6 +66,8 @@ function baseProps(overrides: Partial<AppProps> = {}): AppProps {
     runTurn: fakeRunTurn(),
     saveConfig: () => {},
     getUsage: () => [],
+    listAgents: () => [],
+    listSkills: () => [],
     ...overrides,
   };
 }
@@ -358,19 +360,22 @@ describe('staged output rendering (terminal simulation)', () => {
     instance.unmount();
   });
 
-  it('thought line appears when first token is delayed', async () => {
+  it('live status line ticks while waiting for first token (CC style)', async () => {
     const runTurn = vi.fn(async (input: string, handle: TurnHandle) => {
-      await new Promise((r) => setTimeout(r, 1100));
+      await new Promise((r) => setTimeout(r, 1300));
       handle.emit({ type: 'text_delta', text: 'late reply' });
       handle.emit({ type: 'done', reply: '' });
     });
     const instance = await renderApp(baseProps({ runTurn }));
     await typeText(instance, 'hi');
     await pressKey(instance, '\r');
-    await new Promise((r) => setTimeout(r, 1400));
-    expect(lastFrame(instance)).toContain('Thought for 1s');
+    await new Promise((r) => setTimeout(r, 600));
+    // live CC-style line: · <Verb>… (Ns · thinking)
+    expect(lastFrame(instance)).toMatch(/· \w+… \(\d+s · thinking\)/);
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(lastFrame(instance)).toContain('late reply');
     instance.unmount();
-  }, 5000);
+  }, 6000);
 });
 
 
@@ -390,6 +395,61 @@ describe('reasoning display (terminal simulation)', () => {
     expect(frame).toContain('用户要赛车游戏');
     expect(frame).toContain('开始实现');
     expect(frame).not.toContain('Thought for');
+    instance.unmount();
+  });
+});
+
+describe('queued interjection (terminal simulation)', () => {
+  it('Enter during a running turn queues the message and runs it after completion', async () => {
+    const calls: string[] = [];
+    const secondGate: { resolve: () => void } = { resolve: () => {} };
+    const runTurn = vi.fn(async (input: string, handle: TurnHandle) => {
+      calls.push(input);
+      if (calls.length === 1) {
+        // hold the first turn open until we've queued the second message
+        await new Promise<void>((r) => { secondGate.resolve = r; });
+        handle.emit({ type: 'text_delta', text: 'first done' });
+        handle.emit({ type: 'done', reply: '' });
+      } else {
+        handle.emit({ type: 'text_delta', text: `second:${input}` });
+        handle.emit({ type: 'done', reply: '' });
+      }
+    });
+    const instance = await renderApp(baseProps({ runTurn }));
+    await typeText(instance, 'first task');
+    await pressKey(instance, '\r');
+    await new Promise((r) => setTimeout(r, 100));
+    // busy now — type and Enter should queue, not run
+    await typeText(instance, 'interjection');
+    await pressKey(instance, '\r');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(lastFrame(instance)).toContain('queued: interjection');
+    expect(calls).toHaveLength(1);
+    secondGate.resolve();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(calls).toEqual(['first task', 'interjection']);
+    expect(lastFrame(instance)).toContain('second:interjection');
+    instance.unmount();
+  });
+});
+
+
+describe('multi-line paste (terminal simulation)', () => {
+  it('bracketed paste inserts full text with newlines, no early submit', async () => {
+    const runTurn = vi.fn(async (input: string, handle: TurnHandle) => {
+      handle.emit({ type: 'text_delta', text: 'ok' });
+      handle.emit({ type: 'done', reply: '' });
+    });
+    const instance = await renderApp(baseProps({ runTurn }));
+    const pasted = 'CLAUDE code就没有超时\n\n· Caramelizing… (19s · thinking)';
+    // bracketed paste arrives as ONE stdin write
+    instance.stdin.write(`\x1b[200~${pasted}\x1b[201~`);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(lastFrame(instance)).toContain('Caramelizing… (19s · thinking)');
+    expect(lastFrame(instance)).toContain('CLAUDE code就没有超时');
+    await pressKey(instance, '\r');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(runTurn).toHaveBeenCalledWith(pasted, expect.anything());
     instance.unmount();
   });
 });

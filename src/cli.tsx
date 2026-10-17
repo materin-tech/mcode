@@ -7,6 +7,7 @@
 import React from 'react';
 import { render } from 'ink';
 import { App, type TurnHandle } from './ui/App.js';
+import type { ChatItem } from './ui/types.js';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createT } from './ui/locales.js';
@@ -17,7 +18,7 @@ import { createRegistry, toToolSpecs } from './tools/registry.js';
 import { createPermissionManager } from './permission/manager.js';
 import { runAgentTurn } from './agent/loop.js';
 import { BUILTIN_AGENTS, createTaskTool, type AgentDefinition } from './agent/subagent.js';
-import { loadEccAgents, eccSkillsDir } from './plugins/ecc-core.js';
+import { loadEccAgents, loadUserAgents, materializeEccCore, eccSkillsDir } from './plugins/ecc-core.js';
 import { HistoryStore, createSession, persistSession, listSessions, loadSession, listAllSessions, loadSessionGlobal } from './agent/history.js';
 import { loadSkills, buildSkillIndex } from './skills/loader.js';
 import { findMcodeDocs, buildProjectDocSection } from './memory/mdoc.js';
@@ -155,14 +156,20 @@ async function main(): Promise<void> {
   const modeRef: { current: Mode } = { current: config.defaultMode };
   const goalRef: { current: string | null } = { current: null };
   const session = createSession(cwd, config.activeModel ?? '', config.defaultMode);
+  let resumedItems: ChatItem[] | undefined;
   const provider = getActiveProvider(config);
   const skills = loadSkills(cwd, eccSkillsDir() ? [{ dir: eccSkillsDir()!, source: 'bundled' as const }] : []);
   registry.set('skill', createSkillTool(skills));
   const projectDoc = buildProjectDocSection(findMcodeDocs(cwd));
   // ECC agents merge after built-ins; built-in definitions win on name clash.
+  const materialized = materializeEccCore();
+  if (materialized) {
+    console.log(`✓ ECC core materialized: ${materialized.agents} agents, ${materialized.skills} skills → ~/.mcode`);
+  }
+  const userAgents = loadUserAgents();
   const eccAgents = loadEccAgents();
-  const builtinNames = new Set(BUILTIN_AGENTS.map((a) => a.name));
-  const mergedAgents = [...BUILTIN_AGENTS, ...eccAgents.filter((a) => !builtinNames.has(a.name))];
+  const known = new Set([...BUILTIN_AGENTS.map((a) => a.name), ...userAgents.map((a) => a.name)]);
+  const mergedAgents = [...BUILTIN_AGENTS, ...userAgents, ...eccAgents.filter((a) => !known.has(a.name))];
 
   // --resume [id] | --continue
   if (args.resume !== undefined || args.continueLast) {
@@ -183,6 +190,12 @@ async function main(): Promise<void> {
       const record = globalFallback ? loadSessionGlobal(args.resume) : loadSession(cwd, args.resume);
       if (record) {
         history.restore(record.messages);
+        resumedItems = record.messages.map((m) => ({
+          kind: m.role === 'user' ? ('user' as const) : ('assistant' as const),
+          text: m.content,
+        }));
+        session.meta.sessionId = record.meta.sessionId;
+        session.meta.title = record.meta.title;
         console.log(`✓ resumed session ${args.resume} (${record.messages.length} messages)`);
       } else {
         console.log(`session '${args.resume}' not found`);
@@ -190,7 +203,15 @@ async function main(): Promise<void> {
     } else if (args.continueLast) {
       const first = sessions[0]!;
       const record = globalFallback ? loadSessionGlobal(first.sessionId) : loadSession(cwd, first.sessionId);
-      if (record) history.restore(record.messages);
+      if (record) {
+        history.restore(record.messages);
+        resumedItems = record.messages.map((m) => ({
+          kind: m.role === 'user' ? ('user' as const) : ('assistant' as const),
+          text: m.content,
+        }));
+        session.meta.sessionId = record.meta.sessionId;
+        session.meta.title = record.meta.title;
+      }
       console.log(`✓ continued ${first.sessionId}`);
     } else {
       console.log('sessions:');
@@ -332,10 +353,25 @@ async function main(): Promise<void> {
       runTurn={runTurn}
       saveConfig={() => saveConfig(config)}
       getUsage={(): ModelUsage[] => usageTracker.snapshot()}
+      listAgents={(): Array<{ name: string; description: string; source: string }> =>
+        mergedAgents.map((a) => ({
+          name: a.name,
+          description: a.description,
+          source: userAgents.some((u) => u.name === a.name)
+            ? 'user'
+            : BUILTIN_AGENTS.some((b) => b.name === a.name)
+              ? 'builtin'
+              : 'ecc',
+        }))
+      }
+      listSkills={(): Array<{ name: string; source: string }> =>
+        skills.map((sk) => ({ name: sk.name, source: sk.source }))
+      }
       onModeChange={(mode) => {
         modeRef.current = mode;
       }}
       onClear={() => history.clear()}
+      initialItems={resumedItems}
       onCompact={async () => {
         const messages = history.all();
         if (messages.length === 0) return;
@@ -376,6 +412,17 @@ async function main(): Promise<void> {
     />,
     { exitOnCtrlC: false },
   );
+  // bracketed paste: multi-line pastes arrive wrapped in markers instead of
+  // being interpreted as Enter presses
+  process.stdout.write('\x1b[?2004h');
+  const cleanupPaste = (): void => {
+    process.stdout.write('\x1b[?2004l');
+  };
+  process.on('exit', cleanupPaste);
+  process.on('SIGINT', () => {
+    cleanupPaste();
+    process.exit(0);
+  });
   void instance;
 }
 
