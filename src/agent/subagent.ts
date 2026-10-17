@@ -74,7 +74,7 @@ export interface TaskToolDeps {
   cwd: string;
   getMode: () => Mode;
   signal?: AbortSignal;
-  onEvent?: (event: { type: string; name?: string; detail?: string }) => void;
+  onEvent?: (event: { type: string; name?: string; detail?: string; text?: string; scope?: string; usage?: { inputTokens: number; outputTokens: number; cachedTokens: number } }) => void;
 }
 
 /** Factory for the `task` tool: dispatches a subagent with isolated context. */
@@ -126,6 +126,10 @@ export function createTaskTool(deps: TaskToolDeps): ToolDefinition {
             deps.onEvent?.({ type: 'tool_start', name: `${agent.name}:${event.name}` });
           } else if (event.type === 'tool_result') {
             deps.onEvent?.({ type: 'tool_result', name: `${agent.name}:${event.name}`, detail: event.result.output });
+          } else if (event.type === 'reasoning_delta') {
+            deps.onEvent?.({ type: 'reasoning_delta', text: event.text, scope: agent.name });
+          } else if (event.type === 'usage') {
+            deps.onEvent?.({ type: 'usage', usage: event.usage });
           }
         },
       });

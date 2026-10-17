@@ -15,11 +15,13 @@ import { planCompaction } from './compaction.js';
 import type { AgentDefinition } from './subagent.js';
 import type { SkillSummary } from '../skills/loader.js';
 import type { Language, Mode } from '../config/constants.js';
+import type { UserAttachment } from '../api/client.js';
 import {toToolSpecs} from "../tools/registry";
 
 export type AgentEvent =
   | { type: 'text_delta'; text: string }
-  | { type: 'reasoning_delta'; text: string }
+  | { type: 'retrying'; attempt: number; max: number; reason: string }
+  | { type: 'reasoning_delta'; text: string; scope?: string }
   | { type: 'tool_start'; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; name: string; result: ToolResult }
   | { type: 'usage'; usage: UsageInfo }
@@ -35,6 +37,10 @@ export interface AgentOptions {
   projectDoc?: string;
   /** Active session goal, injected into the system prompt. */
   goal?: string;
+  /** Images attached to the initial user input. */
+  attachments?: UserAttachment[];
+  /** PUA always-on directive (/pua:on). */
+  puaDirective?: string;
   /** Available subagents (drives the dispatch protocol). */
   agents?: AgentDefinition[];
   model: string;
@@ -53,6 +59,8 @@ export interface AgentOptions {
 }
 
 const MAX_TOOL_TURNS = 25;
+const MAX_STREAM_RETRIES = 10; // Claude Code parity
+const TRANSIENT_STREAM_ERRORS = /terminated|ECONNRESET|EPIPE|ECONNABORTED|network|fetch failed|socket|premature|other side closed/i;
 
 /**
  * compact-harness main loop. The while-loop over tool calls is an
@@ -83,41 +91,66 @@ export async function runAgentTurn(
         projectDoc: options.projectDoc,
         goal: options.goal,
         agents: options.agents,
+        puaDirective: options.puaDirective,
       });
 
     let currentInput = userInput;
     let turnCount = 0;
 
     while (turnCount < MAX_TOOL_TURNS) {
-      const stream = streamResponse({
-        baseURL: options.baseURL,
-        apiKey: options.apiKey,
-        model: options.model,
-        instructions: systemPrompt,
-        history: options.history.all(),
-        userInput: currentInput,
-        tools: toolSpecs,
-        signal: options.signal,
-      });
-
+      // Transient stream failures (server drop, network blip) retry with
+      // backoff instead of killing the turn — Claude Code parity.
       let reply = '';
       const calls: ToolCall[] = [];
       let usage: UsageInfo | null = null;
-      for await (const event of stream) {
-        switch (event.type) {
-          case 'text_delta':
-            reply += event.text;
-            onEvent({ type: 'text_delta', text: event.text });
-            break;
-          case 'reasoning_delta':
-            onEvent({ type: 'reasoning_delta', text: event.text });
-            break;
-          case 'tool_call':
-            calls.push(event.call);
-            break;
-          case 'done':
-            usage = event.usage;
-            break;
+      for (let attempt = 0; ; attempt++) {
+        reply = '';
+        calls.length = 0;
+        usage = null;
+        try {
+          const stream = streamResponse({
+            baseURL: options.baseURL,
+            apiKey: options.apiKey,
+            model: options.model,
+            instructions: systemPrompt,
+            history: options.history.all(),
+            userInput: currentInput,
+            attachments: turnCount === 0 ? options.attachments : undefined,
+            tools: toolSpecs,
+            signal: options.signal,
+          });
+          for await (const event of stream) {
+            switch (event.type) {
+              case 'text_delta':
+                reply += event.text;
+                onEvent({ type: 'text_delta', text: event.text });
+                break;
+              case 'reasoning_delta':
+                onEvent({ type: 'reasoning_delta', text: event.text });
+                break;
+              case 'tool_call':
+                calls.push(event.call);
+                break;
+              case 'done':
+                usage = event.usage;
+                break;
+            }
+          }
+          break; // stream completed cleanly
+        } catch (err) {
+          if (options.signal?.aborted) throw err;
+          const msg = err instanceof Error ? err.message : String(err);
+          if (!TRANSIENT_STREAM_ERRORS.test(msg) || attempt >= MAX_STREAM_RETRIES - 1) {
+            throw err;
+          }
+          const waitMs = Math.min(1000 * 2 ** attempt, 10_000); // cap backoff at 10s
+          onEvent({
+            type: 'retrying',
+            attempt: attempt + 1,
+            max: MAX_STREAM_RETRIES,
+            reason: msg.slice(0, 80),
+          });
+          await new Promise((resolve) => setTimeout(resolve, waitMs));
         }
       }
 

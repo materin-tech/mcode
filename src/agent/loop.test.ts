@@ -88,6 +88,52 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('stream retry on transient failure', () => {
+  it('retries and completes when the stream terminates mid-flight', async () => {
+    let call = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      call++;
+      if (call === 1) {
+        // first attempt: stream errors after starting
+        const stream = new ReadableStream({
+          start(c) {
+            c.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"par"}\n\n'));
+            c.error(new TypeError('terminated'));
+          },
+        });
+        return new Response(stream, { status: 200 });
+      }
+      return sseResponse(TEXT_ONLY);
+    }));
+    const { options, events } = makeOptions();
+    await runAgentTurn('hi', options);
+    const done = events.find((e) => e.type === 'done');
+    expect(done && 'reply' in done ? done.reply : '').toBe('Hello world');
+    const retrying = events.find((e) => e.type === 'retrying');
+    expect(retrying).toBeDefined();
+    expect(options.history.all().at(-1)?.content).toBe('Hello world');
+  });
+
+  it('does not retry on user abort', async () => {
+    const controller = new AbortController();
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      calls++;
+      const stream = new ReadableStream({
+        start(c) {
+          c.error(new TypeError('terminated'));
+        },
+      });
+      void controller;
+      return new Response(stream, { status: 200 });
+    }));
+    const { options } = makeOptions();
+    controller.abort();
+    await runAgentTurn('hi', { ...options, signal: controller.signal });
+    expect(calls).toBe(1);
+  });
+});
+
 describe('runAgentTurn (integration, mocked SSE)', () => {
   it('streams text-only reply and records usage', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => sseResponse(TEXT_ONLY)));

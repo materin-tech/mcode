@@ -8,24 +8,26 @@ import React from 'react';
 import { render } from 'ink';
 import { App, type TurnHandle } from './ui/App.js';
 import type { ChatItem } from './ui/types.js';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createT } from './ui/locales.js';
 import { loadConfig, saveConfig, getActiveProvider, resolveApiKey, ensureMcodeDir, providerIssue } from './config/config.js';
-import { detectLanguage, sessionDataDir, type Mode } from './config/constants.js';
+import { detectLanguage, historyPath, sessionDataDir, type Mode } from './config/constants.js';
 import { buildGoalPrompt, checkGoalComplete } from './agent/goal.js';
 import { createRegistry, toToolSpecs } from './tools/registry.js';
 import { createPermissionManager } from './permission/manager.js';
 import { runAgentTurn } from './agent/loop.js';
 import { BUILTIN_AGENTS, createTaskTool, type AgentDefinition } from './agent/subagent.js';
-import { loadEccAgents, loadUserAgents, materializeEccCore, eccSkillsDir } from './plugins/ecc-core.js';
+import { loadEccAgents, loadUserAgents, materializeEccCore, materializePuaCore, eccSkillsDir, puaCoreDir } from './plugins/ecc-core.js';
 import { HistoryStore, createSession, persistSession, listSessions, loadSession, listAllSessions, loadSessionGlobal } from './agent/history.js';
 import { loadSkills, buildSkillIndex } from './skills/loader.js';
 import { findMcodeDocs, buildProjectDocSection } from './memory/mdoc.js';
+import { buildPuaDirective } from './config/config.js';
 import { createSkillTool } from './skills/tool.js';
 import { createSkillCommands } from './commands/builtin.js';
 import { createUsageTracker, type ModelUsage } from './util/token-usage.js';
 import { listWorkspaceFiles } from './util/files.js';
+import type { CompletionItem } from './ui/useCompletion.js';
 import { createCommandList } from './commands/builtin.js';
 import type { Language } from './config/constants.js';
 
@@ -91,6 +93,7 @@ function runSubcommand(args: CliArgs): boolean {
       baseURL: process.env['MCODE_BASE_URL'] ?? 'https://api.openai.com/v1',
       apiKeyEnv: process.env['MCODE_API_KEY_ENV'] ?? process.env['MCODE_API_KEY'] ?? 'OPENAI_API_KEY',
       models: (process.env['MCODE_MODELS'] ?? 'gpt-5').split(',').map((m) => m.trim()),
+      multimodalModels: (process.env['MCODE_MULTIMODAL'] ?? '').split(',').map((m) => m.trim()).filter(Boolean),
     };
     saveConfig({
       ...config,
@@ -155,16 +158,25 @@ async function main(): Promise<void> {
   const usageTracker = createUsageTracker();
   const modeRef: { current: Mode } = { current: config.defaultMode };
   const goalRef: { current: string | null } = { current: null };
+  const activeHandleRef: { current: TurnHandle | null } = { current: null };
   const session = createSession(cwd, config.activeModel ?? '', config.defaultMode);
   let resumedItems: ChatItem[] | undefined;
   const provider = getActiveProvider(config);
-  const skills = loadSkills(cwd, eccSkillsDir() ? [{ dir: eccSkillsDir()!, source: 'bundled' as const }] : []);
+  const bundledSkillDirs: Array<{ dir: string; source: 'bundled' }> = [];
+  if (eccSkillsDir()) bundledSkillDirs.push({ dir: eccSkillsDir()!, source: 'bundled' });
+  const puaDir = puaCoreDir();
+  if (puaDir) bundledSkillDirs.push({ dir: puaDir, source: 'bundled' });
+  const skills = loadSkills(cwd, bundledSkillDirs);
   registry.set('skill', createSkillTool(skills));
   const projectDoc = buildProjectDocSection(findMcodeDocs(cwd));
   // ECC agents merge after built-ins; built-in definitions win on name clash.
   const materialized = materializeEccCore();
   if (materialized) {
     console.log(`✓ ECC core materialized: ${materialized.agents} agents, ${materialized.skills} skills → ~/.mcode`);
+  }
+  const puaMaterialized = materializePuaCore();
+  if (puaMaterialized) {
+    console.log(`✓ PUA core materialized: ${puaMaterialized.skills} skills → ~/.mcode/skills`);
   }
   const userAgents = loadUserAgents();
   const eccAgents = loadEccAgents();
@@ -248,10 +260,24 @@ async function main(): Promise<void> {
       usageTracker,
       cwd,
       getMode: () => modeRef.current,
+      onEvent: (event) => {
+        const h = activeHandleRef.current;
+        if (!h) return;
+        if (event.type === 'reasoning_delta') {
+          h.emit({ type: 'reasoning_delta', text: event.text ?? '', scope: event.scope });
+        } else if (event.type === 'usage') {
+          h.emit({ type: 'usage', usage: event.usage! });
+        } else if (event.type === 'tool_start') {
+          h.emit({ type: 'tool_start', name: event.name ?? '', args: {} });
+        } else if (event.type === 'tool_result') {
+          h.emit({ type: 'tool_result', name: event.name ?? '', ok: true, detail: event.detail ?? '' });
+        }
+      },
     }),
   );
 
   const runTurn = async (input: string, handle: TurnHandle): Promise<void> => {
+    activeHandleRef.current = handle;
     confirmRef.current = handle.confirm;
     modeRef.current = handle.getMode();
     const issue = providerIssue(config);
@@ -284,10 +310,14 @@ async function main(): Promise<void> {
       skills,
       projectDoc,
       agents: mergedAgents,
+      puaDirective: config.puaAlwaysOn
+        ? buildPuaDirective(skills.find((sk) => sk.name === 'pua')?.body ?? null)
+        : undefined,
       cwd,
       mode: modeRef.current,
       signal: handle.signal,
       goal: goalRef.current ?? undefined,
+      attachments: handle.attachments,
       onEvent: (event) => {
         switch (event.type) {
           case 'text_delta':
@@ -312,6 +342,9 @@ async function main(): Promise<void> {
             break;
           case 'compacted':
             handle.emit({ type: 'compacted', note: event.note });
+            break;
+          case 'retrying':
+            handle.emit({ type: 'retrying', attempt: event.attempt, max: event.max, reason: event.reason });
             break;
           case 'done':
             session.meta.totalTokens = usageTracker.snapshot().reduce((sum, m) => sum + m.inputTokens + m.outputTokens, 0);
@@ -341,7 +374,7 @@ async function main(): Promise<void> {
     }
   };
 
-  const fileItems = await listWorkspaceFiles(cwd);
+  const fileItems = await listWorkspaceFiles(cwd); // preload for the first '@' open
   const instance = render(
     <App
       config={config}
@@ -349,7 +382,8 @@ async function main(): Promise<void> {
       version={VERSION}
       t={t}
       commands={[...createCommandList(), ...createSkillCommands(skills)]}
-      listFiles={() => fileItems}
+      listFilesAsync={(): Promise<CompletionItem[]> => listWorkspaceFiles(cwd)}
+      initialFiles={fileItems}
       runTurn={runTurn}
       saveConfig={() => saveConfig(config)}
       getUsage={(): ModelUsage[] => usageTracker.snapshot()}
@@ -367,6 +401,28 @@ async function main(): Promise<void> {
       listSkills={(): Array<{ name: string; source: string }> =>
         skills.map((sk) => ({ name: sk.name, source: sk.source }))
       }
+      setPuaAlwaysOn={(on: boolean) => {
+        config.puaAlwaysOn = on;
+        saveConfig(config);
+      }}
+      historyStats={(): { cwdEntries: number; globalEntries: number; file: string } => {
+        const file = historyPath();
+        let cwdEntries = 0;
+        let globalEntries = 0;
+        if (existsSync(file)) {
+          for (const line of readFileSync(file, 'utf8').split('\n')) {
+            if (line.trim().length === 0) continue;
+            try {
+              const e = JSON.parse(line) as { cwd?: string };
+              if (e.cwd === cwd) cwdEntries++;
+              else globalEntries++;
+            } catch {
+              // skip
+            }
+          }
+        }
+        return { cwdEntries, globalEntries, file };
+      }}
       onModeChange={(mode) => {
         modeRef.current = mode;
       }}

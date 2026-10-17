@@ -17,8 +17,19 @@ export interface HistoryEntry {
 export function appendInputHistory(text: string, cwd: string): void {
   if (text.trim().length === 0) return;
   mkdirSync(mcodeDir(), { recursive: true });
-  const prev = readInputHistory(cwd, 1);
-  if (prev.length > 0 && prev[0] === text) return;
+  // dedupe against the LAST appended line (newest), not the first
+  if (existsSync(historyPath())) {
+    const lines = readFileSync(historyPath(), 'utf8').split('\n').filter((l) => l.trim().length > 0);
+    const last = lines[lines.length - 1];
+    if (last) {
+      try {
+        const lastEntry = JSON.parse(last) as HistoryEntry;
+        if (lastEntry.cwd === cwd && lastEntry.text === text) return;
+      } catch {
+        // skip malformed
+      }
+    }
+  }
   const entry: HistoryEntry = { text, cwd, ts: Date.now() };
   appendFileSync(historyPath(), `${JSON.stringify(entry)}\n`, 'utf8');
 }
@@ -41,10 +52,15 @@ export function readInputHistory(cwd: string, limit = 100): string[] {
       // skip malformed lines
     }
   }
+  // Order: NEWEST first (shell semantics). Re-entered older inputs surface
+  // to the top. recallUp starts at index 0. (Regression fixes: an earlier
+  // .reverse() made ↑ recall the OLDEST global entry, and seen-set dedupe
+  // kept the FIRST position of re-entered inputs.)
   const result: string[] = [];
   const seen = new Set<string>();
   const push = (texts: string[]): void => {
-    for (const text of texts.reverse()) {
+    for (let i = texts.length - 1; i >= 0; i--) {
+      const text = texts[i]!;
       if (!seen.has(text)) {
         seen.add(text);
         result.push(text);

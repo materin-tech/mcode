@@ -11,6 +11,8 @@ import type { Language } from '../config/constants.js';
 import { formatUsageTable } from '../util/token-usage.js';
 import { getActiveProvider, resolveApiKey } from '../config/config.js';
 import { initMcodeDoc, findMcodeDocs } from '../memory/mdoc.js';
+import { readInputHistory } from '../util/input-history.js';
+import { historyPath } from '../config/constants.js';
 import { formatDuration } from '../util/activity.js';
 import type { Command, CommandContext } from './index.js';
 
@@ -204,6 +206,39 @@ export const BUILTIN_COMMANDS: Command[] = [
           ...(skills.length > 40 ? [`  … and ${skills.length - 40} more (see '/' completion panel)`] : []),
         ].join('\n'),
       );
+    },
+  },
+  {
+    name: 'history',
+    description: '诊断输入历史召回 / diagnose input history',
+    handler: (_args, ctx) => {
+      const stats = ctx.historyStats();
+      const cwdCount = readInputHistory(ctx.cwd).length;
+      ctx.print(
+        [
+          `history file: ${stats.file}`,
+          `entries for this cwd: ${stats.cwdEntries} (recallable: ${cwdCount})`,
+          `global entries: ${stats.globalEntries}`,
+          '↑ recalls cwd entries first. If this shows entries but ↑ does nothing,',
+          'the key events are not reaching the app (terminal/multiplexer issue).',
+        ].join('\n'),
+      );
+    },
+  },
+  {
+    name: 'pua:on',
+    description: '全局启用 PUA 闭环纪律 / enable PUA mode globally',
+    handler: (_args, ctx) => {
+      ctx.setPuaAlwaysOn(true);
+      ctx.print('✓ PUA mode ON — closure discipline active in every session');
+    },
+  },
+  {
+    name: 'pua:off',
+    description: '关闭全局 PUA 纪律 / disable PUA mode',
+    handler: (_args, ctx) => {
+      ctx.setPuaAlwaysOn(false);
+      ctx.print('✓ PUA mode OFF');
     },
   },
   {

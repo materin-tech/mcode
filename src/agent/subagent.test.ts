@@ -102,4 +102,29 @@ describe('task tool (subagent integration)', () => {
     expect(seenTools).toContain('read_file');
     expect(seenTools).not.toContain('task');
   });
+
+  it('forwards reasoning with agent scope and usage to deps.onEvent', async () => {
+    const forwarded: Array<{ type: string; scope?: string; text?: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      const stream = new ReadableStream({
+        start(c) {
+          c.enqueue(new TextEncoder().encode('data: {"type":"response.reasoning_text.delta","delta":"thinking..."}\n\n'));
+          c.enqueue(new TextEncoder().encode('data: {"type":"response.output_text.delta","delta":"report"}\n\n'));
+          c.enqueue(new TextEncoder().encode('data: {"type":"response.completed","response":{"usage":{"input_tokens":7,"output_tokens":3}}}\n\n'));
+          c.close();
+        },
+      });
+      return new Response(stream, { status: 200 });
+    }));
+    const tool = createTaskTool({
+      ...deps,
+      onEvent: (event) => forwarded.push(event as { type: string; scope?: string }),
+    });
+    await tool.execute({ subagent_type: 'code-explorer', prompt: 'x' }, { cwd: '/tmp/ws', mode: 'passon' });
+    const reasoning = forwarded.find((e) => e.type === 'reasoning_delta');
+    const usage = forwarded.find((e) => e.type === 'usage');
+    expect(reasoning?.scope).toBe('code-explorer');
+    expect(reasoning?.text).toBe('thinking...');
+    expect((usage as { usage?: { inputTokens: number } }).usage?.inputTokens).toBe(7);
+  });
 });

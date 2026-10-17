@@ -23,12 +23,14 @@ import { MODES, type Mode } from '../config/constants.js';
 import type { Command, CommandContext } from '../commands/index.js';
 import { parseCommand } from '../commands/index.js';
 import { summarizeActivity, formatDuration, clockNow, type ActivityCounts } from '../util/activity.js';
-import { resolveActiveModel } from '../config/config.js';
+import { resolveActiveModel, isMultimodalModel } from '../config/config.js';
 import { expandFileRefs } from '../util/file-refs.js';
 import type { ModelUsage } from '../util/token-usage.js';
 
 export interface TurnHandle {
   emit: (event: TurnEvent) => void;
+  /** Image attachments for this turn. */
+  attachments?: Array<{ path: string; dataUrl: string }>;
   confirm: (toolName: string) => Promise<boolean>;
   signal: AbortSignal;
   getMode: () => Mode;
@@ -36,11 +38,12 @@ export interface TurnHandle {
 
 export type TurnEvent =
   | { type: 'text_delta'; text: string }
-  | { type: 'reasoning_delta'; text: string }
+  | { type: 'reasoning_delta'; text: string; scope?: string }
   | { type: 'tool_start'; name: string; args: Record<string, unknown> }
   | { type: 'tool_result'; name: string; ok: boolean; detail: string }
   | { type: 'usage'; usage: { inputTokens: number; outputTokens: number; cachedTokens: number } }
   | { type: 'compacted'; note: string }
+  | { type: 'retrying'; attempt: number; max: number; reason: string }
   | { type: 'done'; reply: string }
   | { type: 'error'; message: string };
 
@@ -50,7 +53,6 @@ export interface AppProps {
   version: string;
   t: TFunction;
   commands: Command[];
-  listFiles: () => CompletionItem[];
   runTurn: (input: string, handle: TurnHandle) => Promise<void>;
   onModeChange?: (mode: Mode) => void;
   onLanguageChange?: (lang: string) => void;
@@ -66,6 +68,12 @@ export interface AppProps {
   initialItems?: ChatItem[];
   listAgents: () => Array<{ name: string; description: string; source: string }>;
   listSkills: () => Array<{ name: string; source: string }>;
+  historyStats: () => { cwdEntries: number; globalEntries: number; file: string };
+  setPuaAlwaysOn: (on: boolean) => void;
+  /** Fresh workspace scan — called every time the @ trigger opens. */
+  listFilesAsync: () => Promise<CompletionItem[]>;
+  /** Preloaded file list for the first '@' open. */
+  initialFiles?: CompletionItem[];
 }
 
 export function App(props: AppProps): React.ReactElement {
@@ -75,6 +83,21 @@ export function App(props: AppProps): React.ReactElement {
   const modeRef = useRef<Mode>(props.config.defaultMode);
   const abortRef = useRef<AbortController | null>(null);
   const runTurnRef = useRef<((input: string) => void) | null>(null);
+  const lastReasoningIdxRef = useRef<Record<string, number>>({});
+  const reasoningBufRef = useRef<Record<string, string>>({});
+  const reasoningFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const MAX_REASONING_CHARS = 30_000;
+  const MAX_ITEMS = 300;
+  // Transcript memory bound: drop oldest items past the cap.
+  const pushCapped = (prev: ChatItem[], item: ChatItem): ChatItem[] => {
+    const next = [...prev, item];
+    if (next.length <= MAX_ITEMS) return next;
+    const trimmed = next.slice(next.length - MAX_ITEMS);
+    const first = trimmed[0]!;
+    if (first.kind === 'system' && first.text.startsWith('… older')) return trimmed;
+    return [{ kind: 'system', text: `… older transcript trimmed (${next.length - MAX_ITEMS} items) · /resume for full history` }, ...trimmed];
+  };
+  const [tokensUsed, setTokensUsed] = useState(0);
   const pendingConfirmRef = useRef<((allow: boolean) => void) | null>(null);
   const [permissionTool, setPermissionTool] = useState<string | null>(null);
   const [modelPicker, setModelPicker] = useState<{ open: boolean; index: number }>({ open: false, index: 0 });
@@ -82,6 +105,10 @@ export function App(props: AppProps): React.ReactElement {
   const [phase, setPhase] = useState<'thinking' | 'writing'>('thinking');
   const [queued, setQueued] = useState<string | null>(null);
   const [reasoningExpanded, setReasoningExpanded] = useState(false);
+  const [fileItems, setFileItems] = useState<CompletionItem[]>(props.initialFiles ?? []);
+  const refreshFiles = useCallback((): void => {
+    void props.listFilesAsync().then((items) => setFileItems(items));
+  }, [props]);
   const assistantBufRef = useRef('');
   const activityRef = useRef<ActivityCounts>({});
   const reasoningSeenRef = useRef(false);
@@ -114,7 +141,7 @@ export function App(props: AppProps): React.ReactElement {
   }, { isActive: true });
 
   const print = useCallback((text: string) => {
-    setItems((prev) => [...prev, { kind: 'system', text }]);
+    setItems((prev) => pushCapped(prev, { kind: 'system', text }));
   }, []);
 
   const cycleMode = useCallback(() => {
@@ -127,12 +154,13 @@ export function App(props: AppProps): React.ReactElement {
   }, [props]);
 
   const runTurn = useCallback(
-    (input: string) => {
-      setItems((prev) => [...prev, { kind: 'user', text: input }]);
+    (input: string, images?: Array<{ path: string; dataUrl: string }>) => {
+      setItems((prev) => pushCapped(prev, { kind: 'user', text: input }));
       setBusy(true);
       assistantBufRef.current = '';
       activityRef.current = {};
       reasoningSeenRef.current = false;
+      lastReasoningIdxRef.current = {};
       setPhase('thinking');
       stageStartRef.current = Date.now();
       turnStartRef.current = Date.now();
@@ -171,14 +199,14 @@ export function App(props: AppProps): React.ReactElement {
               if (last && last.kind === 'assistant') {
                 return [...next.slice(0, -1), { kind: 'assistant', text }];
               }
-              return [...next, { kind: 'assistant', text }];
+              return pushCapped(next, { kind: 'assistant', text });
             });
             break;
           }
           case 'tool_start':
             assistantBufRef.current = '';
             activityRef.current[event.name] = (activityRef.current[event.name] ?? 0) + 1;
-            setItems((prev) => [...prev, { kind: 'tool', name: event.name, detail: '(running)', ok: true }]);
+            setItems((prev) => pushCapped(prev, { kind: 'tool', name: event.name, detail: '(running)', ok: true }));
             break;
           case 'tool_result':
             stageStartRef.current = Date.now();
@@ -194,12 +222,18 @@ export function App(props: AppProps): React.ReactElement {
               return next;
             });
             break;
+          case 'usage':
+            setTokensUsed((t) => t + event.usage.inputTokens + event.usage.outputTokens);
+            break;
+          case 'retrying':
+            print(`⟳ stream interrupted (${event.reason}) — retrying ${event.attempt}/${event.max}`);
+            break;
           case 'compacted':
             print(`✓ ${event.note}`);
             break;
           case 'done':
             if (event.reply.length > 0 && assistantBufRef.current.length === 0) {
-              setItems((prev) => [...prev, { kind: 'assistant', text: event.reply }]);
+              setItems((prev) => pushCapped(prev, { kind: 'assistant', text: event.reply }));
             }
             setItems((prev) => {
               const last = prev[prev.length - 1];
@@ -219,7 +253,7 @@ export function App(props: AppProps): React.ReactElement {
           setPermissionTool(toolName);
         });
       props
-        .runTurn(input, { emit, confirm, signal: controller.signal, getMode: () => modeRef.current })
+        .runTurn(input, { emit, confirm, signal: controller.signal, getMode: () => modeRef.current, attachments: images })
         .then(() => {
           setBusy(false);
           setQueued((pending) => {
@@ -266,7 +300,23 @@ export function App(props: AppProps): React.ReactElement {
         if (expanded.missing.length > 0) {
           print(`⚠ missing file refs: ${expanded.missing.join(', ')}`);
         }
-        runTurn(expanded.text);
+        const images = expanded.attachments;
+        const model = resolveActiveModel(props.config);
+        if (images.length > 0 && !isMultimodalModel(props.config, model)) {
+          print(
+            [
+              `⚠ model '${model}' is not marked multimodal — image(s) not sent: ${images.map((a) => a.path).join(', ')}`,
+              `  enable in ~/.mcode/config.json:`,
+              `  "multimodalModels": ["${model}"]  (inside the active provider)`,
+            ].join('\n'),
+          );
+          runTurn(expanded.text);
+          return;
+        }
+        if (images.length > 0) {
+          print(`✓ attached image(s): ${images.map((a) => a.path).join(', ')}`);
+        }
+        runTurn(expanded.text, images);
       });
     },
     [props, print, runTurn, mode, cycleMode],
@@ -281,6 +331,7 @@ export function App(props: AppProps): React.ReactElement {
           props.config.language = result.language;
           props.config.providers = [result.provider];
           props.config.activeProvider = result.provider.name;
+          props.config.activeModel = result.provider.models[0] ?? null;
           props.config.activeModel = result.provider.models[0] ?? null;
           props.config.defaultMode = result.defaultMode;
           props.saveConfig();
@@ -312,6 +363,7 @@ export function App(props: AppProps): React.ReactElement {
         active={busy}
         startedAt={stageStartRef.current}
         phase={phase}
+        tokensUsed={tokensUsed}
         runningCommand={goal ? '/goal active' : null}
       />
       {permissionTool !== null ? (
@@ -327,6 +379,7 @@ export function App(props: AppProps): React.ReactElement {
       {modelPicker.open ? (
         <ModelPicker models={providerModels} selectedIndex={modelPicker.index} />
       ) : null}
+      <ModeHint mode={mode} label={props.t('modeHint')} danger={mode === 'passon'} />
       {queued ? (
         <Box paddingX={1}>
           <Text dimColor>⏎ queued: {queued}</Text>
@@ -338,13 +391,13 @@ export function App(props: AppProps): React.ReactElement {
         cwd={props.cwd}
         t={props.t}
         commandItems={commandItems}
-        listFiles={props.listFiles}
+        fileItems={fileItems}
+        onAtTrigger={refreshFiles}
         onSubmit={handleSubmit}
         onQueue={(text) => setQueued(text)}
         onCycleMode={cycleMode}
         onAbort={() => abortRef.current?.abort()}
       />
-      <ModeHint mode={mode} label={props.t('modeHint')} danger={mode === 'passon'} />
     </Box>
   );
 }
@@ -392,6 +445,11 @@ function buildCommandContext(
     getUsage: props.getUsage,
     listAgents: props.listAgents,
     listSkills: props.listSkills,
+    historyStats: props.historyStats,
+    setPuaAlwaysOn: (on: boolean) => {
+      config.puaAlwaysOn = on;
+      props.saveConfig();
+    },
     startProviderGuide: () => print('run: mcode add_provider <name>'),
     exportSnapshot: (): string | null => props.onSnapshot?.() ?? null,
     runPrompt: (text: string) => runTurn(text),

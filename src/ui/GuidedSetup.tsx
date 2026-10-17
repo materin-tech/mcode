@@ -12,12 +12,13 @@ import type { TFunction } from './locales.js';
 type Step =
   | { kind: 'language' }
   | { kind: 'text'; field: 'name' | 'baseURL' | 'apiKeyEnv' | 'models' }
+  | { kind: 'multimodal' }
   | { kind: 'mode' }
   | { kind: 'done' };
 
 export interface GuideResult {
   language: Language;
-  provider: { name: string; baseURL: string; apiKeyEnv: string; models: string[] };
+  provider: { name: string; baseURL: string; apiKeyEnv: string; models: string[]; multimodalModels: string[] };
   defaultMode: Mode;
 }
 
@@ -39,11 +40,20 @@ export function GuidedSetup(props: {
   });
   const [text, setText] = useState('');
   const [provider, setProvider] = useState({ name: '', baseURL: '', apiKeyEnv: '', models: '' });
+  const [multimodal, setMultimodal] = useState(false);
 
   const languageList = LANGUAGES as readonly Language[];
   const modeList = MODES as readonly Mode[];
 
   useInput((input, key) => {
+    if (step.kind === 'multimodal') {
+      if (key.upArrow || key.downArrow) setMultimodal((v) => !v);
+      if (key.return) {
+        setSelectIndex(0);
+        setStep({ kind: 'mode' });
+      }
+      return;
+    }
     if (step.kind === 'language' || step.kind === 'mode') {
       const count = step.kind === 'language' ? languageList.length : modeList.length;
       if (key.upArrow) setSelectIndex((i) => (i - 1 + count) % count);
@@ -54,13 +64,15 @@ export function GuidedSetup(props: {
           setLanguage(lang);
           setStep({ kind: 'text', field: 'name' });
         } else {
+          const models = provider.models.split(',').map((m) => m.trim()).filter((m) => m.length > 0);
           props.onComplete({
             language,
             provider: {
               name: provider.name,
               baseURL: provider.baseURL,
               apiKeyEnv: provider.apiKeyEnv,
-              models: provider.models.split(',').map((m) => m.trim()).filter((m) => m.length > 0),
+              models,
+              multimodalModels: multimodal ? models : [],
             },
             defaultMode: modeList[selectIndex]!,
           });
@@ -80,7 +92,7 @@ export function GuidedSetup(props: {
         if (step.field === 'name') setStep({ kind: 'text', field: 'baseURL' });
         else if (step.field === 'baseURL') setStep({ kind: 'text', field: 'apiKeyEnv' });
         else if (step.field === 'apiKeyEnv') setStep({ kind: 'text', field: 'models' });
-        else setStep({ kind: 'mode' });
+        else setStep({ kind: 'multimodal' });
         return;
       }
       if (key.backspace || key.delete) {
@@ -115,6 +127,14 @@ export function GuidedSetup(props: {
             {step.field === 'models' ? t('guideModels') : null}
           </Text>
           <Text color="green">› {text}▌</Text>
+        </Box>
+      ) : null}
+      {step.kind === 'multimodal' ? (
+        <Box flexDirection="column">
+          <Text>这些模型是否支持图片输入（多模态）？</Text>
+          <Text color={multimodal ? 'cyan' : undefined}>{multimodal ? '›' : '  '} 支持（多模态图片）</Text>
+          <Text color={!multimodal ? 'cyan' : undefined}>{!multimodal ? '›' : '  '} 不支持（纯文本）</Text>
+          <Text dimColor>不支持时图片不会上传，仅提示；之后可在 config.json 的 multimodalModels 中修改</Text>
         </Box>
       ) : null}
       {step.kind === 'mode' ? (

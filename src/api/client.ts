@@ -13,6 +13,11 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface UserAttachment {
+  path: string;
+  dataUrl: string;
+}
+
 export interface ToolSpec {
   name: string;
   description: string;
@@ -64,6 +69,8 @@ export async function* streamResponse(options: {
   instructions: string;
   history: ChatMessage[];
   userInput: string;
+  /** Images attached to this user input (multimodal input_image parts). */
+  attachments?: UserAttachment[];
   tools: ToolSpec[];
   signal?: AbortSignal;
   /** Abort when no stream data arrives for this long (stall guard). */
@@ -79,7 +86,13 @@ export async function* streamResponse(options: {
       })),
       {
         role: 'user' as const,
-        content: [{ type: 'input_text', text: options.userInput }],
+        content: [
+          { type: 'input_text', text: options.userInput },
+          ...(options.attachments ?? []).map((a) => ({
+            type: 'input_image' as const,
+            image_url: a.dataUrl,
+          })),
+        ],
       },
     ],
     tools: options.tools.map((t) => ({

@@ -24,6 +24,8 @@ export interface CommandContext {
   getUsage: () => ModelUsage[];
   listAgents: () => Array<{ name: string; description: string; source: string }>;
   listSkills: () => Array<{ name: string; source: string }>;
+  historyStats: () => { cwdEntries: number; globalEntries: number; file: string };
+  setPuaAlwaysOn: (on: boolean) => void;
   startProviderGuide: () => void;
   exportSnapshot: () => string | null;
   /** Run a composed prompt (e.g. a skill body) as an agent turn. */

@@ -42,6 +42,26 @@ describe('reasoning events', () => {
   });
 });
 
+describe('image attachments', () => {
+  it('sends input_image parts for attachments', async () => {
+    let captured: Record<string, unknown> = {};
+    vi.stubGlobal('fetch', vi.fn(async (_url: string, init?: { body: string }) => {
+      captured = JSON.parse(init!.body);
+      return new Response(sseBody(['{"type":"response.completed","response":{"usage":{}}}']), { status: 200 });
+    }));
+    for await (const _ of streamResponse({
+      ...BASE,
+      attachments: [{ path: 'shot.png', dataUrl: 'data:image/png;base64,AAAA' }],
+    })) {
+      // drain
+    }
+    const content = (captured['input'] as Array<{ content: Array<Record<string, string>> }>)[0]!.content;
+    expect(content[0]!['type']).toBe('input_text');
+    expect(content[1]!['type']).toBe('input_image');
+    expect(content[1]!['image_url']).toBe('data:image/png;base64,AAAA');
+  });
+});
+
 describe('streamResponse timeout guards', () => {
   it('completes a normal stream well under the idle timeout', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(

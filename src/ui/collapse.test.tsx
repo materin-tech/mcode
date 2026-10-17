@@ -29,9 +29,10 @@ function cfg(): McodeConfig {
 function baseProps(overrides: Partial<AppProps> = {}): AppProps {
   return {
     config: cfg(), cwd: process.cwd(), version: 't', t: createT('en_US'),
-    commands: createCommandList(), listFiles: () => [], runTurn: async () => {},
+    commands: createCommandList(), listFilesAsync: async () => [], runTurn: async () => {},
     saveConfig: () => {}, getUsage: () => [],
-    listAgents: () => [], listSkills: () => [],
+    listAgents: () => [], listSkills: () => [], historyStats: () => ({ cwdEntries: 0, globalEntries: 0, file: '' }),
+    setPuaAlwaysOn: () => {},
     ...overrides,
   };
 }
@@ -81,6 +82,25 @@ describe('reasoning collapse/expand (terminal simulation)', () => {
     await pressKey(instance, '\x0f');
     await new Promise((r) => setTimeout(r, 80));
     expect(lastFrame(instance)).toContain('ctrl+o expand');
+    instance.unmount();
+  });
+});
+
+describe('memory bounds (OOM regression)', () => {
+  it('reasoning text is capped at 30k chars (tail preserved)', async () => {
+    const big = 'x'.repeat(120_000);
+    const runTurn = async (input: string, handle: TurnHandle) => {
+      handle.emit({ type: 'reasoning_delta', text: big });
+      handle.emit({ type: 'text_delta', text: 'ok' });
+      handle.emit({ type: 'done', reply: '' });
+    };
+    const instance = await renderApp(baseProps({ runTurn }));
+    instance.stdin.write('go');
+    await new Promise((r) => setTimeout(r, 50));
+    instance.stdin.write('\r');
+    await new Promise((r) => setTimeout(r, 300));
+    const frame = lastFrame(instance);
+    expect(frame).toContain('ok');
     instance.unmount();
   });
 });

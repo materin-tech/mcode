@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { providerIssue, resolveApiKey } from './config.js';
+import { providerIssue, resolveApiKey, isMultimodalModel, buildPuaDirective } from './config.js';
 import type { McodeConfig } from './config.js';
 
 function cfg(apiKeyEnv: string | null): McodeConfig {
@@ -58,5 +58,31 @@ describe('providerIssue', () => {
   it('a valid env name that is unset still reports no-api-key (no silent fallback)', () => {
     delete process.env['UNSET_NAME_X'];
     expect(providerIssue(cfg('UNSET_NAME_X')).kind).toBe('no-api-key');
+  });
+});
+
+describe('isMultimodalModel', () => {
+  it('returns true only for models explicitly marked', () => {
+    const config = cfg('K');
+    config.providers[0]!.multimodalModels = ['glm-5.3-flash'];
+    expect(isMultimodalModel(config, 'glm-5.3-flash')).toBe(true);
+    expect(isMultimodalModel(config, 'text-only-model')).toBe(false);
+  });
+
+  it('unmarked provider means no model is multimodal', () => {
+    expect(isMultimodalModel(cfg('K'), 'glm-5.3-flash')).toBe(false);
+  });
+});
+
+describe('buildPuaDirective', () => {
+  it('includes closure red lines and the skill body when available', () => {
+    const d = buildPuaDirective('skill body content');
+    expect(d).toContain('PUA MODE: ALWAYS ON');
+    expect(d).toContain('闭环红线');
+    expect(d).toContain('skill body content');
+  });
+
+  it('works without a skill body', () => {
+    expect(buildPuaDirective(null)).toContain('PUA MODE: ALWAYS ON');
   });
 });

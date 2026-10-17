@@ -5,19 +5,19 @@
  */
 
 import React from 'react';
-import { Box, Text } from 'ink';
+import { Box, Static, Text } from 'ink';
 import type { ChatItem } from './types.js';
 
 const REASONING_COLLAPSED_LINES = 5;
 
-function ReasoningBlock({ text, expanded }: { text: string; expanded: boolean }): React.ReactElement {
+function ReasoningBlock({ text, expanded, label }: { text: string; expanded: boolean; label?: string }): React.ReactElement {
   const lines = text.split('\n').filter((l, i, arr) => l.trim().length > 0 || i < arr.length - 1);
   const total = lines.length;
   if (expanded) {
     const shown = lines.slice(-2000); // render safety cap
     return (
       <Box paddingX={1} flexDirection="column">
-        <Text dimColor>✻ Thinking ({total} lines · ctrl+o collapse)</Text>
+        <Text dimColor>✻ Thinking{label ? ` (${label})` : ''} ({total} lines · ctrl+o collapse)</Text>
         {shown.map((line, i) => (
           <Text dimColor key={i}>  {line}</Text>
         ))}
@@ -30,7 +30,7 @@ function ReasoningBlock({ text, expanded }: { text: string; expanded: boolean })
   return (
     <Box paddingX={1} flexDirection="column">
       <Text dimColor>
-        ✻ Thinking…{hidden > 0 ? ` (+${hidden} lines` : ''}{hidden > 0 ? ' · ' : ' ('}ctrl+o expand)
+        ✻ Thinking{label ? ` (${label})` : ''}…{hidden > 0 ? ` (+${hidden} lines` : ''}{hidden > 0 ? ' · ' : ' ('}ctrl+o expand)
       </Text>
       {tail.map((line, i) => (
         <Text dimColor key={i}>  {line}</Text>
@@ -49,7 +49,7 @@ function MessageBlock({ item, reasoningExpanded }: { item: ChatItem; reasoningEx
         </Box>
       );
     case 'reasoning':
-      return <ReasoningBlock text={item.text} expanded={reasoningExpanded} />;
+      return <ReasoningBlock text={item.text} expanded={reasoningExpanded} label={item.label} />;
     case 'thought':
       return (
         <Box paddingX={1}>
@@ -93,11 +93,29 @@ function MessageBlock({ item, reasoningExpanded }: { item: ChatItem; reasoningEx
   }
 }
 
+/**
+ * Flicker fix (CC architecture): sealed transcript renders through <Static>
+ * — ink paints those lines once and never rewrites them. Only the current
+ * turn's items (reasoning/assistant/tool streams) re-render per frame, so
+ * frame diffs stay small and the screen stops flashing.
+ */
 export function MessageList({ items, reasoningExpanded }: { items: ChatItem[]; reasoningExpanded: boolean }): React.ReactElement {
+  let lastUserIdx = -1;
+  for (let i = items.length - 1; i >= 0; i--) {
+    if (items[i]!.kind === 'user') {
+      lastUserIdx = i;
+      break;
+    }
+  }
+  const sealed = items.slice(0, lastUserIdx + 1);
+  const live = items.slice(lastUserIdx + 1);
   return (
     <Box flexDirection="column" flexGrow={1}>
-      {items.map((item, index) => (
-        <MessageBlock key={index} item={item} reasoningExpanded={reasoningExpanded} />
+      <Static items={sealed}>
+        {(item, index) => <MessageBlock key={`s-${index}`} item={item} reasoningExpanded={false} />}
+      </Static>
+      {live.map((item, index) => (
+        <MessageBlock key={`l-${index}`} item={item} reasoningExpanded={reasoningExpanded} />
       ))}
     </Box>
   );

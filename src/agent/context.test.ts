@@ -13,6 +13,23 @@ describe('buildSystemPrompt decision policy', () => {
     expect(toolsIdx).toBeGreaterThan(directIdx);
   });
 
+  it('restores rule 4 and keeps 5/6 intact (patch-damage regression)', () => {
+    expect(prompt).toContain('never explore files "just in case"');
+    expect(prompt).toContain('NEVER end a turn by only listing your limitations');
+    expect(prompt).not.toContain('replaceable-anchor');
+  });
+
+  it('includes PUA closure discipline (no self-report completion)', () => {
+    expect(prompt).toContain('CLOSURE DISCIPLINE (non-negotiable)');
+    expect(prompt).toContain('run an actual verification against the real artifact');
+    expect(prompt).toContain('A completion claim without verification evidence is a failed task');
+  });
+
+  it('includes the long-task incremental protocol', () => {
+    expect(prompt).toContain('LONG TASKS: work incrementally');
+    expect(prompt).toContain('NEVER emit an entire large deliverable');
+  });
+
   it('explicitly forbids tools for conversational questions', () => {
     expect(prompt).toContain('call NO tools');
     expect(prompt).toContain('never explore files');

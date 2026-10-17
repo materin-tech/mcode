@@ -59,7 +59,7 @@ function baseProps(overrides: Partial<AppProps> = {}): AppProps {
     version: 'test',
     t: createT('en_US'),
     commands: createCommandList(),
-    listFiles: () => [
+    listFilesAsync: async () => [
       { insertValue: 'src/a.ts', label: 'src/a.ts' },
       { insertValue: 'src/b.ts', label: 'src/b.ts' },
     ],
@@ -68,6 +68,8 @@ function baseProps(overrides: Partial<AppProps> = {}): AppProps {
     getUsage: () => [],
     listAgents: () => [],
     listSkills: () => [],
+    historyStats: () => ({ cwdEntries: 0, globalEntries: 0, file: '' }),
+    setPuaAlwaysOn: () => {},
     ...overrides,
   };
 }
@@ -252,6 +254,9 @@ describe('App terminal simulation (ink-testing-library)', () => {
     // models
     await typeText(instance, 'm1,m2');
     await pressKey(instance, '\r');
+    // multimodal question → enter (default: 不支持)
+    await pressKey(instance, '\r');
+    await new Promise((r) => setTimeout(r, 80));
     // mode select → enter (passon)
     await pressKey(instance, '\r');
     await new Promise((r) => setTimeout(r, 30));
@@ -450,6 +455,37 @@ describe('multi-line paste (terminal simulation)', () => {
     await pressKey(instance, '\r');
     await new Promise((r) => setTimeout(r, 50));
     expect(runTurn).toHaveBeenCalledWith(pasted, expect.anything());
+    instance.unmount();
+  });
+});
+
+
+describe('fresh @ file scan (terminal simulation)', () => {
+  it('picks up files created AFTER startup', async () => {
+    // 模拟运行中新文件落盘：listFilesAsync 每次调用都看到新文件
+    let created = false;
+    const runTurn = vi.fn(async (input: string, handle: TurnHandle) => {
+      handle.emit({ type: 'text_delta', text: 'ok' });
+      handle.emit({ type: 'done', reply: '' });
+    });
+    const instance = await renderApp(baseProps({
+      runTurn,
+      listFilesAsync: async () => [
+        { insertValue: 'old.ts', label: 'old.ts' },
+        ...(created ? [{ insertValue: 'new-screenshot.png', label: 'new-screenshot.png' }] : []),
+      ],
+    }));
+    await pressKey(instance, '@');
+    await new Promise((r) => setTimeout(r, 60));
+    expect(lastFrame(instance)).toContain('old.ts');
+    expect(lastFrame(instance)).not.toContain('new-screenshot.png');
+    // 文件落盘后，重新触发 @
+    await pressKey(instance, '\x7f'); // backspace 关闭面板
+    await new Promise((r) => setTimeout(r, 30));
+    created = true;
+    await pressKey(instance, '@');
+    await new Promise((r) => setTimeout(r, 80));
+    expect(lastFrame(instance)).toContain('new-screenshot.png');
     instance.unmount();
   });
 });

@@ -17,6 +17,7 @@ export function StatusBar(props: {
   active: boolean;
   startedAt: number;
   phase: 'thinking' | 'writing';
+  tokensUsed?: number;
   runningCommand: string | null;
 }): React.ReactElement | null {
   const [, tick] = useState(0);
@@ -28,9 +29,11 @@ export function StatusBar(props: {
   if (!props.active && !props.runningCommand) return null;
   const secs = props.active ? Math.max(0, Math.floor((Date.now() - props.startedAt) / 1000)) : 0;
   const verb = VERBS[Math.floor(secs / 4) % VERBS.length]!;
+  const tokens = props.tokensUsed ?? 0;
+  const tokenPart = tokens > 0 ? ` · ${tokens >= 1000 ? `${(tokens / 1000).toFixed(1)}k` : tokens} tokens` : '';
   return (
     <Box justifyContent="space-between" paddingX={1}>
-      <Text dimColor>{props.active ? `· ${verb}… (${secs}s · ${props.phase})` : ''}</Text>
+      <Text dimColor>{props.active ? `· ${verb}… (${secs}s · ${props.phase}${tokenPart})` : ''}</Text>
       {props.runningCommand ? <Text color="magenta">{props.runningCommand}</Text> : null}
     </Box>
   );

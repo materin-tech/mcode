@@ -23,6 +23,8 @@ export function buildSystemPrompt(options: {
   goal?: string;
   /** Available subagents for the dispatch protocol. */
   agents?: AgentDefinition[];
+  /** PUA always-on directive (/pua:on). */
+  puaDirective?: string;
 }): string {
   const lang = LANGUAGE_DIRECTIVES[options.language];
   const lines: string[] = [
@@ -35,6 +37,9 @@ export function buildSystemPrompt(options: {
     '4. When a task does need files, read only what the question requires — never explore files "just in case". Reading files is not a substitute for answering.',
     '5. NEVER end a turn by only listing your limitations. Before saying "I cannot do X", check whether your tools can compose a solution: `websearch` and `webfetch` (or `bash` curl) can reach the network, so real-time data lookup is usually possible. Attempt the most promising approach, then present the result.',
     '6. If you genuinely cannot proceed, do not dead-end: ask ONE concrete follow-up question or offer 2-3 concrete options (with what each would produce) so the user can pick. Every turn must move toward a definite outcome.',
+    '7. LONG TASKS: work incrementally. Complete ONE small step per response (one file, one module, one feature), verify it with tools, give a brief progress note, then continue in the next step. NEVER emit an entire large deliverable (a whole app, many full files) in a single response — extremely long single responses fail. Write file-by-file with write_file, run checks between steps, and keep each response small. Dispatch independent subtasks to subagents to keep this conversation lean.',
+    '8. CLOSURE DISCIPLINE (non-negotiable): NEVER self-report completion. Before saying a task is done: (a) restate the acceptance criteria; (b) run an actual verification against the real artifact — build it, run the tests, start the server and curl it, node --check the JS, or headless-browser the page if available; (c) show the evidence output in your reply; (d) if something cannot be verified, say exactly what and why. A completion claim without verification evidence is a failed task, even if the code looks right.',
+    '9. If a previous step in this conversation claimed completion without evidence, treat that claim as unverified and verify it now before building on it.',
     '',
     'Rules:',
     '- Never invent file contents; verify with tools when file facts matter.',

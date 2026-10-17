@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import React from 'react';
+import React, { useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { useState } from 'react';
 import { useCompletion, type CompletionItem } from './useCompletion.js';
@@ -43,7 +43,10 @@ export interface InputBoxProps {
   cwd: string;
   t: TFunction;
   commandItems: CompletionItem[];
-  listFiles: () => CompletionItem[];
+  /** Current workspace file list (refreshed on each @ open). */
+  fileItems: CompletionItem[];
+  /** Called when the @ trigger opens — kicks a fresh directory scan. */
+  onAtTrigger: () => void;
   onSubmit: (text: string) => void;
   /** Enter while busy → queue the message for the next turn boundary. */
   onQueue: (text: string) => void;
@@ -57,8 +60,8 @@ export interface InputBoxProps {
  * plain editing — the two states are mutually exclusive by design.
  */
 export function InputBox(props: InputBoxProps): React.ReactElement {
-  const [fileItems, setFileItems] = useState<CompletionItem[]>([]);
-  const completion = useCompletion(props.commandItems, fileItems);
+  const completion = useCompletion(props.commandItems, props.fileItems);
+  const prevTriggerRef = useRef<'/' | '@' | null>(null);
   const history = useInputHistory(props.cwd, (value) => props.onSubmit(value));
 
   const text = history.text;
@@ -68,9 +71,11 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
     history.setText(next);
     history.exitRecall();
     completion.handleTextChange(next);
-    if (detectTriggerChar(next) === '@' && fileItems.length === 0) {
-      setFileItems(props.listFiles());
-    }
+    // every fresh '@' open rescans the workspace — new files (e.g. screenshots)
+    // dropped into the directory must appear immediately
+    const trigger = detectTriggerChar(next);
+    if (trigger === '@' && prevTriggerRef.current !== '@') props.onAtTrigger();
+    prevTriggerRef.current = trigger;
   };
 
   useInput((input, key) => {
@@ -80,12 +85,12 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
     }
     if (key.upArrow) {
       if (completion.handleArrow('up')) return;
-      if (!props.busy) history.recallUp();
+      history.recallUp();
       return;
     }
     if (key.downArrow) {
       if (completion.handleArrow('down')) return;
-      if (!props.busy) history.recallDown();
+      history.recallDown();
       return;
     }
     if (key.tab) {
@@ -98,6 +103,7 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
     }
     if (key.escape) {
       completion.close();
+      if (props.busy) props.onAbort();
       return;
     }
     if (key.return) {

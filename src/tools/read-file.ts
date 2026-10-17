@@ -5,6 +5,8 @@
  */
 
 import { readFile } from 'node:fs/promises';
+
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp']);
 import { guardPath, clampOutput } from './guard.js';
 import type { ToolDefinition, ToolContext, ToolResult } from './types.js';
 
@@ -25,6 +27,12 @@ export const readFileTool: ToolDefinition = {
     const abs = guardPath(String(input['path']), ctx.cwd);
     if (!abs) {
       return { success: false, output: 'error: path escapes the workspace' };
+    }
+    if (IMAGE_EXTS.has(abs.split('.').pop()?.toLowerCase() ?? '')) {
+      return {
+        success: false,
+        output: `binary image file — ask the user to reference it with @${String(input['path'])} in their message so it attaches as image content (multimodal)`,
+      };
     }
     try {
       const content = await readFile(abs, 'utf8');

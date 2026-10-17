@@ -34,9 +34,9 @@ export function useInputHistory(cwd: string, onSubmit: (text: string) => void): 
       draftRef.current = text;
       if (entriesRef.current.length === 0) return;
       recallingRef.current = true;
-      indexRef.current = entriesRef.current.length - 1;
-    } else if (indexRef.current > 0) {
-      indexRef.current -= 1;
+      indexRef.current = 0; // newest entry first
+    } else if (indexRef.current < entriesRef.current.length - 1) {
+      indexRef.current += 1;
     } else {
       return;
     }
@@ -45,11 +45,11 @@ export function useInputHistory(cwd: string, onSubmit: (text: string) => void): 
 
   const recallDown = useCallback(() => {
     if (!recallingRef.current) return;
-    if (indexRef.current < entriesRef.current.length - 1) {
-      indexRef.current += 1;
+    if (indexRef.current > 0) {
+      indexRef.current -= 1;
       setText(entriesRef.current[indexRef.current] ?? '');
     } else {
-      // bottom: restore the unsent draft
+      // top reached: restore the unsent draft
       recallingRef.current = false;
       indexRef.current = -1;
       setText(draftRef.current);

@@ -147,3 +147,35 @@ export function loadUserAgents(): AgentDefinition[] {
   }
   return agents;
 }
+
+/** Locate bundled assets/pua-core (PUA skills: closure discipline, methodologies). */
+export function puaCoreDir(): string | null {
+  const dir = eccCoreDir();
+  if (dir && existsSync(join(dir, '..', 'pua-core'))) return join(dir, '..', 'pua-core');
+  return null;
+}
+
+/** Materialize bundled PUA skills into ~/.mcode/skills (idempotent, additive). */
+export function materializePuaCore(): { skills: number } | null {
+  const dir = puaCoreDir();
+  if (!dir) return null;
+  const home = join(homedir(), '.mcode');
+  const marker = join(home, '.pua-materialized');
+  if (existsSync(marker)) return null;
+  const skillsTarget = join(home, 'skills');
+  mkdirSync(skillsTarget, { recursive: true });
+  let count = 0;
+  for (const entry of readdirSync(dir)) {
+    const srcFile = join(dir, entry, 'SKILL.md');
+    if (!existsSync(srcFile)) continue;
+    const targetDir = join(skillsTarget, entry);
+    mkdirSync(targetDir, { recursive: true });
+    const target = join(targetDir, 'SKILL.md');
+    if (!existsSync(target)) {
+      copyFileSync(srcFile, target);
+      count++;
+    }
+  }
+  writeFileSync(marker, `pua-core materialized at ${new Date().toISOString()}\n`, 'utf8');
+  return { skills: count };
+}
