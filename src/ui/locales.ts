@@ -23,7 +23,6 @@ export type StringKey =
   | 'noApiKeyWarning'
   | 'slashHint'
   | 'atHint'
-  | 'inputCollapsedSuffix'
   | 'toolRunning'
   | 'permissionAsk'
   | 'permissionAllow'
@@ -52,7 +51,6 @@ const zh_CN: Record<StringKey, string> = {
   noApiKeyWarning: 'API Key 未设置：请先 export 环境变量后再发送消息',
   slashHint: '指令补全：↑↓ 选择，tab 补全，回车执行',
   atHint: '文件/目录补全：↑↓ 选择，tab 补全',
-  inputCollapsedSuffix: ' ⋯ +{n} 行，↑ 展开',
   toolRunning: '运行中',
   permissionAsk: '是否允许执行？',
   permissionAllow: '允许',
@@ -82,7 +80,6 @@ const en_US: Record<StringKey, string> = {
   noApiKeyWarning: 'API key not set: export the environment variable first, then send a message',
   slashHint: 'Command completion: ↑↓ select, tab complete, enter run',
   atHint: 'File/dir completion: ↑↓ select, tab complete',
-  inputCollapsedSuffix: ' ⋯ +{n} more lines, ↑ expand',
   toolRunning: 'running',
   permissionAsk: 'Allow execution?',
   permissionAllow: 'allow',

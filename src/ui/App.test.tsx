@@ -462,14 +462,10 @@ describe('multi-line paste (terminal simulation)', () => {
     // bracketed paste arrives as ONE stdin write
     instance.stdin.write(`\x1b[200~${pasted}\x1b[201~`);
     await new Promise((r) => setTimeout(r, 50));
-    // 折叠展示：首行 + 行数徽标，未展开时第 3 行不可见
-    expect(lastFrame(instance)).toContain('粘贴测试首行');
-    expect(lastFrame(instance)).toContain('⋯ +2');
-    expect(lastFrame(instance)).not.toContain('Caramelizing… (19s · thinking)');
-    // ↑ 展开 → 全文可见
-    await pressKey(instance, '\x1b[A');
-    expect(lastFrame(instance)).toContain('Caramelizing… (19s · thinking)');
-    // 展开态回车：完整多行内容原样提交
+    // token 折叠：占位符可见，粘贴原文不可见
+    expect(lastFrame(instance)).toContain('[Pasted text #1 +3 lines]');
+    expect(lastFrame(instance)).not.toContain('Caramelizing…');
+    // 回车提交：token 展开为粘贴全文
     await pressKey(instance, '\r');
     await new Promise((r) => setTimeout(r, 50));
     expect(runTurn).toHaveBeenCalledWith(pasted, expect.anything());
@@ -517,10 +513,36 @@ describe('multi-line paste (terminal simulation)', () => {
     const instance = await renderApp(baseProps({ runTurn }));
     instance.stdin.write('老终端没有括号粘贴\n第二行');
     await new Promise((r) => setTimeout(r, 30));
+    // 老终端多行 chunk 同样折叠为 token；提交展开回全文
+    expect(lastFrame(instance)).toContain('[Pasted text #1 +2 lines]');
     await pressKey(instance, '\r');
     await new Promise((r) => setTimeout(r, 50));
     expect(runTurn).toHaveBeenCalledTimes(1);
     expect(runTurn).toHaveBeenCalledWith('老终端没有括号粘贴\n第二行', expect.anything());
+    instance.unmount();
+  });
+
+  it('backspace at token end removes the whole pasted block at once', async () => {
+    const runTurn = vi.fn(async (input: string, handle: TurnHandle) => {
+      handle.emit({ type: 'text_delta', text: 'ok' });
+      handle.emit({ type: 'done', reply: '' });
+    });
+    const instance = await renderApp(baseProps({ runTurn }));
+    await typeText(instance, '前缀');
+    instance.stdin.write('\x1b[200~块甲\n块乙\x1b[201~');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(lastFrame(instance)).toContain('[Pasted text #1 +2 lines]');
+    // 一次退格：token 整体消失，前缀保留
+    await pressKey(instance, '\x7f');
+    expect(lastFrame(instance)).not.toContain('Pasted text');
+    expect(lastFrame(instance)).toContain('前缀');
+    // 再粘贴仍递增编号，提交展开
+    instance.stdin.write('\x1b[200~块丙\n块丁\x1b[201~');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(lastFrame(instance)).toContain('[Pasted text #2 +2 lines]');
+    await pressKey(instance, '\r');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(runTurn).toHaveBeenCalledWith('前缀块丙\n块丁', expect.anything());
     instance.unmount();
   });
 });

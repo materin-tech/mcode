@@ -1,6 +1,6 @@
 {
   "name": "@materin-tech/materin-mcode",
-  "version": "0.2.8",
+  "version": "0.2.9",
   "description": "MCode — terminal AI coding agent (Claude Code style TUI, OpenAI Responses API)",
   "type": "module",
   "bin": {

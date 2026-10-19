@@ -12,9 +12,10 @@ import { CompletionPanel } from './CompletionPanel.js';
 import { useInputHistory } from './useInputHistory.js';
 import type { TFunction } from './locales.js';
 
+const identity = <T,>(x: T): T => x;
+
 const PASTE_START = '\x1b[200~';
-const PASTE_END = '\x1b[201~';
-// Ink 的按键解析会吃掉 chunk 开头的 ESC（按 ESC 键处理），START/END 标记
+const PASTE_END = '\x1b[201~';// Ink 的按键解析会吃掉 chunk 开头的 ESC（按 ESC 键处理），START/END 标记
 // 到达 handler 时可能只剩 "[200~" / "[201~"——两种形态都要识别
 const PASTE_START_BARE = '[200~';
 const PASTE_END_BARE = '[201~';
@@ -103,9 +104,48 @@ export interface InputBoxProps {
 export function InputBox(props: InputBoxProps): React.ReactElement {
   const completion = useCompletion(props.commandItems, props.fileItems);
   const prevTriggerRef = useRef<'/' | '@' | null>(null);
-  const history = useInputHistory(props.cwd, (value) => props.onSubmit(value));
+  // 多行粘贴登记表：粘贴折叠为占位 token 插入输入框，提交时展开还原全文
+  const pastesRef = useRef<Array<{ token: string; content: string }>>([]);
+  const nextPasteIdRef = useRef(1);
+  const expandRef = useRef<(text: string) => string>(identity);
+  const history = useInputHistory(props.cwd, (value) => props.onSubmit(expandRef.current(value)));
 
   const pasteBufRef = useRef<{ text: string; start: number } | null>(null);
+
+  /** 登记一段多行粘贴，返回占位 token（对齐主流终端 agent：[Pasted text #N +M lines]） */
+  const registerPaste = (content: string): string => {
+    const id = nextPasteIdRef.current;
+    nextPasteIdRef.current += 1;
+    // 行数按去尾换行后的内容计（"a\n" 视为 1 行而非 2）
+    const lines = content.replace(/\n+$/, '').split('\n').length;
+    const token = `[Pasted text #${id} +${lines} lines]`;
+    pastesRef.current.push({ token, content });
+    return token;
+  };
+  expandRef.current = (text: string): string => {
+    let out = text;
+    for (const { token, content } of pastesRef.current) out = out.split(token).join(content);
+    return out;
+  };
+  /** 光标左侧是否恰好压在某个 token 末尾 → 整体删除用 */
+  const tokenEndingAt = (cursor: number): string | null => {
+    for (const { token } of pastesRef.current) {
+      const start = text.lastIndexOf(token, cursor - 1);
+      if (start >= 0 && start + token.length === cursor) return token;
+    }
+    return null;
+  };
+  /** 粘贴载荷入框：多行折叠为 token，单行原样插入（base 为当前文本基线）；返回插入内容的文本表示 */
+  const insertPaste = (base: string, cleaned: string): string => {
+    if (cleaned.length === 0) return '';
+    if (cleaned.includes('\n')) {
+      const token = registerPaste(cleaned);
+      handleChange(base + token);
+      return token;
+    }
+    handleChange(base + cleaned);
+    return cleaned;
+  };
 
   useEffect(() => {
     // 括号粘贴模式：终端把整段粘贴从 ESC[200~ 到 ESC[201~ 整段包好送来，
@@ -122,16 +162,6 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
   const text = history.text;
   const cursor = history.cursor;
   const panelOpen = completion.state.trigger !== null;
-
-  // 多行输入折叠展示（对齐主流终端 agent 的输入做法）：内容变多行即收起为
-  // 单行预览（首行 + 行数徽标），↑ 展开编辑；已展开时继续编辑不再自动收起。
-  const [collapsed, setCollapsed] = useState(false);
-  const prevMultiRef = useRef(false);
-  useEffect(() => {
-    const isMulti = text.includes('\n');
-    if (isMulti && !prevMultiRef.current) setCollapsed(true);
-    prevMultiRef.current = isMulti;
-  }, [text]);
 
   const handleChange = (next: string, cur?: number): void => {
     history.setText(next, cur);
@@ -151,7 +181,7 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
     if (stale !== null && Date.now() - stale.start > PASTE_STALE_MS) {
       pasteBufRef.current = null;
       const flushed = normalizePaste(stale.text);
-      if (flushed.length > 0) handleChange(text + flushed);
+      insertPaste(text, flushed);
     }
     // 括号粘贴跨 chunk 缓冲：大段粘贴会被内核拆成多次 stdin read，
     // START/END 标记之间的所有块（含裸 \r）都是粘贴载荷，绝不触发提交/打断
@@ -190,16 +220,17 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
       }
       pasteBufRef.current = null;
       const cleaned = normalizePaste(acc.slice(0, endIdx));
-      if (cleaned.length > 0) handleChange(base + cleaned);
+      // 载荷入框（多行折叠为 token）；返回值是插入内容的文本表示（token 或原文）
+      const inserted = insertPaste(base, cleaned);
       const residue = acc.slice(endIdx + endLen);
       if (residue.length === 0) return;
       if (/^[\r\n]+$/.test(residue)) {
         // 粘贴后紧跟的回车（与 END 合并进同一 data 事件）：按回车键提交
-        history.submit(base + cleaned);
+        history.submit(base + inserted);
         return;
       }
       const extra = normalizePaste(residue);
-      if (extra.length > 0) handleChange(base + cleaned + extra);
+      if (extra.length > 0) insertPaste(base + inserted, extra);
       return;
     }
     if (key.tab && key.shift) {
@@ -212,11 +243,7 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
         history.recallUp();
         return;
       }
-      // 有内容：跨行移动光标（文本编辑器语义）；折叠态先展开
-      if (collapsed && text.includes('\n')) {
-        setCollapsed(false);
-        return;
-      }
+      // 有内容：跨行移动光标（文本编辑器语义）
       history.setCursor(cursorVerticalMove(text, cursor, -1));
       return;
     }
@@ -226,18 +253,10 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
         history.recallDown();
         return;
       }
-      // 光标已在末行：折叠多行内容（与 ↑ 展开对偶，形成闭环）
-      const lastRow = cursorVerticalMove(text, cursor, 1);
-      if (lastRow === cursor && text.includes('\n')) {
-        setCollapsed(true);
-        return;
-      }
-      history.setCursor(lastRow);
+      history.setCursor(cursorVerticalMove(text, cursor, 1));
       return;
     }
     if (key.leftArrow || key.rightArrow) {
-      // 折叠态内容视为整体：横移键不动（先 ↑ 展开），避免在不可见位置插入
-      if (collapsed && text.includes('\n')) return;
       const d = key.leftArrow ? -1 : 1;
       history.setCursor(Math.min(Math.max(cursor + d, 0), text.length));
       return;
@@ -262,7 +281,7 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
         const value = text.trim();
         if (value.length > 0) {
           history.setText('');
-          props.onQueue(value);
+          props.onQueue(expandRef.current(value));
         }
         return;
       }
@@ -270,8 +289,13 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
       return;
     }
     if (key.backspace || key.delete) {
-      // 删除光标前一字符；光标在 0 时不动
+      // 删除光标前一字符；光标在 0 时不动；压在粘贴 token 末尾时整体删除
       if (cursor === 0) return;
+      const token = tokenEndingAt(cursor);
+      if (token !== null) {
+        handleChange(text.slice(0, cursor - token.length) + text.slice(cursor), cursor - token.length);
+        return;
+      }
       handleChange(text.slice(0, cursor - 1) + text.slice(cursor), cursor - 1);
       return;
     }
@@ -283,8 +307,7 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
       // bracketed paste or any multi-line chunk: insert as literal text,
       // never interpreted as Enter / commands
       if (input.includes(PASTE_START) || input.includes(PASTE_END) || (input.length > 1 && /[\n\r]/.test(input))) {
-        const cleaned = normalizePaste(input);
-        if (cleaned.length > 0) handleChange(text + cleaned);
+        insertPaste(text, normalizePaste(input));
         return;
       }
       handleChange(text.slice(0, cursor) + input + text.slice(cursor));
@@ -302,23 +325,9 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
       ) : null}
       <Box borderStyle="round" borderColor={props.busy ? 'gray' : 'cyan'} paddingX={1}>
         <Text color="cyan">❯ </Text>
-        {collapsed && text.includes('\n') ? (() => {
-          const firstLine = text.split('\n')[0] ?? '';
-          const extra = text.split('\n').length - 1;
-          return (
-            <>
-              <Text>{firstLine}</Text>
-              <Text dimColor>{props.t('inputCollapsedSuffix').replace('{n}', String(extra))}</Text>
-              <Text color="gray">▌</Text>
-            </>
-          );
-        })() : (
-          <>
-            <Text>{text.slice(0, cursor)}</Text>
-            <Text color="gray">▌</Text>
-            <Text>{text.slice(cursor)}</Text>
-          </>
-        )}
+        <Text>{text.slice(0, cursor)}</Text>
+        <Text color="gray">▌</Text>
+        <Text>{text.slice(cursor)}</Text>
       </Box>
       {panelOpen ? (
         <Text dimColor>
