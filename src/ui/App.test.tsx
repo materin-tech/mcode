@@ -60,6 +60,7 @@ function baseProps(overrides: Partial<AppProps> = {}): AppProps {
     t: createT('en_US'),
     commands: createCommandList(),
     listFilesAsync: async () => [
+      { insertValue: 'src/', label: 'src/' },
       { insertValue: 'src/a.ts', label: 'src/a.ts' },
       { insertValue: 'src/b.ts', label: 'src/b.ts' },
     ],
@@ -205,15 +206,20 @@ describe('App terminal simulation (ink-testing-library)', () => {
     instance.unmount();
   });
 
-  it('@ opens file completion and tab inserts path', async () => {
+  it('@ shows first level only; tab on dir descends; tab on file closes panel', async () => {
     const instance = await renderApp(baseProps());
     await pressKey(instance, '@');
+    // 第一层：只显 src/ 目录，二层文件不可见
+    expect(lastFrame(instance)).toContain('src/');
+    expect(lastFrame(instance)).not.toContain('src/a.ts');
+    // tab 选中 src/ → 下钻：二层可见，输入停在 @src/
+    await pressKey(instance, '\t');
+    expect(lastFrame(instance)).toContain('@src/');
     expect(lastFrame(instance)).toContain('src/a.ts');
-    await typeText(instance, 'a.ts');
-    expect(lastFrame(instance)).toContain('src/a.ts');
-    expect(lastFrame(instance)).not.toContain('src/b.ts');
+    // tab 选中 src/a.ts → 输入带尾随空格，面板收起（二层隐藏）
     await pressKey(instance, '\t');
     expect(lastFrame(instance)).toContain('@src/a.ts ');
+    expect(lastFrame(instance)).not.toContain('src/b.ts');
     instance.unmount();
   });
 

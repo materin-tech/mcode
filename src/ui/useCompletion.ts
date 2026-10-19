@@ -90,10 +90,22 @@ export function useCompletion(commandItems: CompletionItem[], fileItems: Complet
 
   const visible = useMemo(() => {
     if (state.trigger === null) return [];
-    const q = state.query.toLowerCase();
     if (state.trigger === '@') {
-      return fileItems.filter((it) => it.insertValue.toLowerCase().includes(q));
+      // 层级下钻（对齐 Claude Code）：只展示查询目录的立即子项——
+      // query 按最后一个 '/' 拆成目录前缀 + 层内过滤词，目录项以 '/' 结尾
+      const q = state.query.toLowerCase();
+      const sep = q.lastIndexOf('/');
+      const dir = sep === -1 ? '' : q.slice(0, sep + 1);
+      const filter = sep === -1 ? q : q.slice(sep + 1);
+      return fileItems.filter((it) => {
+        const v = it.insertValue.toLowerCase();
+        if (!v.startsWith(dir) || v.length <= dir.length) return false;
+        const rest = v.slice(dir.length);
+        const core = rest.endsWith('/') ? rest.slice(0, -1) : rest;
+        return !core.includes('/') && (filter === '' || core.includes(filter));
+      });
     }
+    const q = state.query.toLowerCase();
     return commandItems.filter((it) => it.insertValue.toLowerCase().startsWith(q));
   }, [commandItems, fileItems, state.trigger, state.query]);
 
@@ -125,7 +137,12 @@ export function useCompletion(commandItems: CompletionItem[], fileItems: Complet
       const idx = Math.max(slash, at);
       const insert = selected.insertValue;
       if (state.trigger === '@') {
-        return `${currentText.slice(0, idx + 1)}${insert} `;
+        // 从 @ 触发符处整段替换（对齐 RS apply 的空白边界语义）——
+        // query 里的 '/' 是路径分隔符，不能当插入边界
+        const atIdx = currentText.lastIndexOf('@');
+        // 目录不带尾随空格（面板进入该目录展示下一层）；文件补空格（面板收起）
+        const suffix = insert.endsWith('/') ? '' : ' ';
+        return `${currentText.slice(0, atIdx + 1)}${insert}${suffix}`;
       }
       return `${currentText.slice(0, idx + 1)}${insert}`;
     },
