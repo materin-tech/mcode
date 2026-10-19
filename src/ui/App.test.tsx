@@ -446,15 +446,63 @@ describe('multi-line paste (terminal simulation)', () => {
       handle.emit({ type: 'done', reply: '' });
     });
     const instance = await renderApp(baseProps({ runTurn }));
-    const pasted = 'CLAUDE code就没有超时\n\n· Caramelizing… (19s · thinking)';
+    const pasted = '粘贴测试首行\n\n· Caramelizing… (19s · thinking)';
     // bracketed paste arrives as ONE stdin write
     instance.stdin.write(`\x1b[200~${pasted}\x1b[201~`);
     await new Promise((r) => setTimeout(r, 50));
     expect(lastFrame(instance)).toContain('Caramelizing… (19s · thinking)');
-    expect(lastFrame(instance)).toContain('CLAUDE code就没有超时');
+    expect(lastFrame(instance)).toContain('粘贴测试首行');
     await pressKey(instance, '\r');
     await new Promise((r) => setTimeout(r, 50));
     expect(runTurn).toHaveBeenCalledWith(pasted, expect.anything());
+    instance.unmount();
+  });
+
+  it('split-chunk bracketed paste buffers across stdin events, never submits early', async () => {
+    const runTurn = vi.fn(async (input: string, handle: TurnHandle) => {
+      handle.emit({ type: 'text_delta', text: 'ok' });
+      handle.emit({ type: 'done', reply: '' });
+    });
+    const instance = await renderApp(baseProps({ runTurn }));
+    // 内核把一段粘贴拆成两次 read：chunk1 带 START，chunk2 带裸 \r 与 END。
+    // 中间块里的 \r \n 都是载荷，不得触发提交
+    instance.stdin.write('\x1b[200~第一行\n第二行');
+    await new Promise((r) => setTimeout(r, 30));
+    instance.stdin.write('\r第三行\x1b[201~');
+    await new Promise((r) => setTimeout(r, 30));
+    await pressKey(instance, '\r');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    expect(runTurn).toHaveBeenCalledWith('第一行\n第二行\n第三行', expect.anything());
+    instance.unmount();
+  });
+
+  it('paste with coalesced trailing Enter in the same chunk submits the pasted text', async () => {
+    const runTurn = vi.fn(async (input: string, handle: TurnHandle) => {
+      handle.emit({ type: 'text_delta', text: 'ok' });
+      handle.emit({ type: 'done', reply: '' });
+    });
+    const instance = await renderApp(baseProps({ runTurn }));
+    // 真机观测：粘贴尾部与回车常合并进同一 data 事件——回车应提交整段粘贴
+    instance.stdin.write('\x1b[200~合并首行\n合并二行\x1b[201~\r');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    expect(runTurn).toHaveBeenCalledWith('合并首行\n合并二行', expect.anything());
+    instance.unmount();
+  });
+
+  it('multi-line chunk without markers inserts as text (legacy terminals)', async () => {
+    const runTurn = vi.fn(async (input: string, handle: TurnHandle) => {
+      handle.emit({ type: 'text_delta', text: 'ok' });
+      handle.emit({ type: 'done', reply: '' });
+    });
+    const instance = await renderApp(baseProps({ runTurn }));
+    instance.stdin.write('老终端没有括号粘贴\n第二行');
+    await new Promise((r) => setTimeout(r, 30));
+    await pressKey(instance, '\r');
+    await new Promise((r) => setTimeout(r, 50));
+    expect(runTurn).toHaveBeenCalledTimes(1);
+    expect(runTurn).toHaveBeenCalledWith('老终端没有括号粘贴\n第二行', expect.anything());
     instance.unmount();
   });
 });

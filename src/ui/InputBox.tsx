@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { Box, Text, useInput } from 'ink';
 import { useState } from 'react';
 import { useCompletion, type CompletionItem } from './useCompletion.js';
@@ -14,6 +14,13 @@ import type { TFunction } from './locales.js';
 
 const PASTE_START = '\x1b[200~';
 const PASTE_END = '\x1b[201~';
+// Ink 的按键解析会吃掉 chunk 开头的 ESC（按 ESC 键处理），START/END 标记
+// 到达 handler 时可能只剩 "[200~" / "[201~"——两种形态都要识别
+const PASTE_START_BARE = '[200~';
+const PASTE_END_BARE = '[201~';
+
+/** 缓冲中的粘贴超过此时长仍未见 END 标记 → 视为终端异常，冲刷为普通文本。 */
+const PASTE_STALE_MS = 5000;
 
 /** Normalize a pasted chunk: strip markers, keep newlines as real newlines. */
 function normalizePaste(raw: string): string {
@@ -64,6 +71,20 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
   const prevTriggerRef = useRef<'/' | '@' | null>(null);
   const history = useInputHistory(props.cwd, (value) => props.onSubmit(value));
 
+  const pasteBufRef = useRef<{ text: string; start: number } | null>(null);
+
+  useEffect(() => {
+    // 括号粘贴模式：终端把整段粘贴从 ESC[200~ 到 ESC[201~ 整段包好送来，
+    // 粘贴内的换行不会被终端当作回车键逐个发送——多行打包的前提。
+    // 绕过 Ink 的帧流直接写 process.stdout（模式切换不产生可渲染输出，
+    // 走 useStdout 会污染 Ink 的帧记账），仅 TTY 下启用
+    if (!process.stdout.isTTY) return;
+    process.stdout.write('\x1b[?2004h');
+    return () => {
+      process.stdout.write('\x1b[?2004l');
+    };
+  }, []);
+
   const text = history.text;
   const panelOpen = completion.state.trigger !== null;
 
@@ -79,6 +100,61 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
   };
 
   useInput((input, key) => {
+    // 超时冲刷：缓冲超过 PASTE_STALE_MS 仍未见 END 标记 → 视为终端异常，
+    // 把攒到的内容当普通文本落盘，避免输入框永久吞键
+    const stale = pasteBufRef.current;
+    if (stale !== null && Date.now() - stale.start > PASTE_STALE_MS) {
+      pasteBufRef.current = null;
+      const flushed = normalizePaste(stale.text);
+      if (flushed.length > 0) handleChange(text + flushed);
+    }
+    // 括号粘贴跨 chunk 缓冲：大段粘贴会被内核拆成多次 stdin read，
+    // START/END 标记之间的所有块（含裸 \r）都是粘贴载荷，绝不触发提交/打断
+    if (pasteBufRef.current !== null || input.includes(PASTE_START) || input.includes(PASTE_START_BARE)) {
+      let acc = (pasteBufRef.current?.text ?? '') + input;
+      const startIdx = Math.max(acc.indexOf(PASTE_START), acc.indexOf(PASTE_START_BARE));
+      if (pasteBufRef.current === null && startIdx > 0) {
+        // START 之前的零散字符与粘贴合并进同一 chunk：按普通文本插入
+        handleChange(text + acc.slice(0, startIdx));
+        acc = acc.slice(startIdx);
+      }
+      // 剥掉 START（可能已被 Ink 吃掉 ESC，也可能没有）
+      const s = acc.indexOf(PASTE_START);
+      if (s >= 0) acc = acc.slice(0, s) + acc.slice(s + PASTE_START.length);
+      else {
+        const sb = acc.indexOf(PASTE_START_BARE);
+        if (sb >= 0) acc = acc.slice(0, sb) + acc.slice(sb + PASTE_START_BARE.length);
+      }
+      // END 同样可能是完整或裸形态，取最先出现的
+      const fullEnd = acc.indexOf(PASTE_END);
+      const bareEnd = acc.indexOf(PASTE_END_BARE);
+      let endIdx = -1;
+      let endLen = 0;
+      if (fullEnd !== -1 && (bareEnd === -1 || fullEnd < bareEnd)) {
+        endIdx = fullEnd;
+        endLen = PASTE_END.length;
+      } else if (bareEnd !== -1) {
+        endIdx = bareEnd;
+        endLen = PASTE_END_BARE.length;
+      }
+      if (endIdx === -1) {
+        pasteBufRef.current = { text: acc, start: Date.now() };
+        return;
+      }
+      pasteBufRef.current = null;
+      const cleaned = normalizePaste(acc.slice(0, endIdx));
+      if (cleaned.length > 0) handleChange(text + cleaned);
+      const residue = acc.slice(endIdx + endLen);
+      if (residue.length === 0) return;
+      if (/^[\r\n]+$/.test(residue)) {
+        // 粘贴后紧跟的回车（与 END 合并进同一 data 事件）：按回车键提交
+        history.submit(text + cleaned);
+        return;
+      }
+      const extra = normalizePaste(residue);
+      if (extra.length > 0) handleChange(text + cleaned + extra);
+      return;
+    }
     if (key.tab && key.shift) {
       props.onCycleMode();
       return;

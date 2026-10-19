@@ -20,7 +20,7 @@ export function useInputHistory(cwd: string, onSubmit: (text: string) => void): 
   recallUp: () => void;
   recallDown: () => void;
   exitRecall: () => void;
-  submit: () => void;
+  submit: (override?: string) => void;
 } {
   const [text, setText] = useState('');
   const entriesRef = useRef<string[]>([]);
@@ -62,8 +62,8 @@ export function useInputHistory(cwd: string, onSubmit: (text: string) => void): 
     indexRef.current = -1;
   }, []);
 
-  const submit = useCallback(() => {
-    const value = text.trim();
+  const submit = useCallback((override?: string) => {
+    const value = (override ?? text).trim();
     if (value.length === 0) return;
     appendInputHistory(value, cwd);
     recallingRef.current = false;
