@@ -182,14 +182,26 @@ describe('App terminal simulation (ink-testing-library)', () => {
     instance.unmount();
   });
 
-  it('down arrow restores unsent draft after recall', async () => {
+  it('recalled content owns ↓ too: cursor semantics, no draft restore', async () => {
+    appendInputHistory('old one', process.cwd());
+    const instance = await renderApp(baseProps());
+    // 新契约（与 Rust 版 beta.3 对齐）：回填只从空框进入；框内有内容时
+    // ↑/↓ 一律是跨行移动光标——回填后 ↓ 不再回退草稿
+    await pressKey(instance, '\x1b[A');
+    expect(lastFrame(instance)).toContain('old one');
+    await pressKey(instance, '\x1b[B');
+    expect(lastFrame(instance)).toContain('old one');
+    instance.unmount();
+  });
+
+  it('up arrow with content moves the cursor instead of recalling history', async () => {
     appendInputHistory('old one', process.cwd());
     const instance = await renderApp(baseProps());
     await typeText(instance, 'my draft');
     await pressKey(instance, '\x1b[A');
-    expect(lastFrame(instance)).toContain('old one');
-    await pressKey(instance, '\x1b[B');
+    // 有内容：不回填，框内文本原样保留
     expect(lastFrame(instance)).toContain('my draft');
+    expect(lastFrame(instance)).not.toContain('old one');
     instance.unmount();
   });
 
@@ -450,8 +462,14 @@ describe('multi-line paste (terminal simulation)', () => {
     // bracketed paste arrives as ONE stdin write
     instance.stdin.write(`\x1b[200~${pasted}\x1b[201~`);
     await new Promise((r) => setTimeout(r, 50));
-    expect(lastFrame(instance)).toContain('Caramelizing… (19s · thinking)');
+    // 折叠展示：首行 + 行数徽标，未展开时第 3 行不可见
     expect(lastFrame(instance)).toContain('粘贴测试首行');
+    expect(lastFrame(instance)).toContain('⋯ +2');
+    expect(lastFrame(instance)).not.toContain('Caramelizing… (19s · thinking)');
+    // ↑ 展开 → 全文可见
+    await pressKey(instance, '\x1b[A');
+    expect(lastFrame(instance)).toContain('Caramelizing… (19s · thinking)');
+    // 展开态回车：完整多行内容原样提交
     await pressKey(instance, '\r');
     await new Promise((r) => setTimeout(r, 50));
     expect(runTurn).toHaveBeenCalledWith(pasted, expect.anything());

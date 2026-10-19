@@ -16,17 +16,29 @@ import { appendInputHistory, readInputHistory } from '../util/input-history.js';
  */
 export function useInputHistory(cwd: string, onSubmit: (text: string) => void): {
   text: string;
-  setText: (t: string) => void;
+  cursor: number;
+  setText: (t: string, c?: number) => void;
+  setCursor: (c: number) => void;
   recallUp: () => void;
   recallDown: () => void;
   exitRecall: () => void;
   submit: (override?: string) => void;
 } {
-  const [text, setText] = useState('');
+  const [text, setTextState] = useState('');
+  const [cursor, setCursorState] = useState(0);
   const entriesRef = useRef<string[]>([]);
   const indexRef = useRef<number>(-1);
   const draftRef = useRef<string>('');
   const recallingRef = useRef<boolean>(false);
+
+  /** 设文本并把光标对齐到指定位置（默认行尾）——所有写入统一走这里 */
+  const setText = useCallback((t: string, c?: number) => {
+    setTextState(t);
+    setCursorState(c ?? t.length);
+  }, []);
+
+  /** 纯光标移动（调用方负责 clamp 到合法范围） */
+  const setCursor = useCallback((c: number) => setCursorState(c), []);
 
   const recallUp = useCallback(() => {
     if (!recallingRef.current) {
@@ -41,7 +53,7 @@ export function useInputHistory(cwd: string, onSubmit: (text: string) => void): 
       return;
     }
     setText(entriesRef.current[indexRef.current] ?? '');
-  }, [cwd, text]);
+  }, [cwd, text, setText]);
 
   const recallDown = useCallback(() => {
     if (!recallingRef.current) return;
@@ -72,5 +84,5 @@ export function useInputHistory(cwd: string, onSubmit: (text: string) => void): 
     onSubmit(value);
   }, [cwd, onSubmit, text]);
 
-  return { text, setText, recallUp, recallDown, exitRecall, submit };
+  return { text, cursor, setText, setCursor, recallUp, recallDown, exitRecall, submit };
 }

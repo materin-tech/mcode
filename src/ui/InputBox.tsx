@@ -43,6 +43,40 @@ function detectTriggerChar(text: string): '/' | '@' | null {
   return text[idx] as '/' | '@';
 }
 
+/**
+ * 光标垂直跨行移动（文本编辑器语义）：保留列、目标列 clamp 到目标行行尾；
+ * 已在首行/末行则原地不动。delta 为 -1（上）/ 1（下）。与 Rust 版 cursor_vertical_move 对齐。
+ */
+function cursorVerticalMove(text: string, cursor: number, delta: -1 | 1): number {
+  const lines = text.split('\n');
+  let prefix = 0;
+  let row = 0;
+  let col = cursor;
+  for (let i = 0; i < lines.length; i += 1) {
+    const len = lines[i]!.length;
+    if (cursor <= prefix + len) {
+      row = i;
+      col = cursor - prefix;
+      break;
+    }
+    // cursor 恰在换行符上：归到当前行行尾
+    if (cursor === prefix + len + 1 && i < lines.length - 1) {
+      row = i;
+      col = len;
+      break;
+    }
+    prefix += len + 1;
+  }
+  const target = Math.min(Math.max(row + delta, 0), lines.length - 1);
+  if (target === row) return cursor;
+  const targetCol = Math.min(col, lines[target]!.length);
+  let targetPrefix = 0;
+  for (let i = 0; i < target; i += 1) {
+    targetPrefix += lines[i]!.length + 1;
+  }
+  return targetPrefix + targetCol;
+}
+
 export interface InputBoxProps {
   busy: boolean;
   /** Disable key handling (e.g. while the model picker is open). */
@@ -86,10 +120,21 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
   }, []);
 
   const text = history.text;
+  const cursor = history.cursor;
   const panelOpen = completion.state.trigger !== null;
 
-  const handleChange = (next: string): void => {
-    history.setText(next);
+  // 多行输入折叠展示（对齐主流终端 agent 的输入做法）：内容变多行即收起为
+  // 单行预览（首行 + 行数徽标），↑ 展开编辑；已展开时继续编辑不再自动收起。
+  const [collapsed, setCollapsed] = useState(false);
+  const prevMultiRef = useRef(false);
+  useEffect(() => {
+    const isMulti = text.includes('\n');
+    if (isMulti && !prevMultiRef.current) setCollapsed(true);
+    prevMultiRef.current = isMulti;
+  }, [text]);
+
+  const handleChange = (next: string, cur?: number): void => {
+    history.setText(next, cur);
     history.exitRecall();
     completion.handleTextChange(next);
     // every fresh '@' open rescans the workspace — new files (e.g. screenshots)
@@ -111,11 +156,13 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
     // 括号粘贴跨 chunk 缓冲：大段粘贴会被内核拆成多次 stdin read，
     // START/END 标记之间的所有块（含裸 \r）都是粘贴载荷，绝不触发提交/打断
     if (pasteBufRef.current !== null || input.includes(PASTE_START) || input.includes(PASTE_START_BARE)) {
+      let base = text;
       let acc = (pasteBufRef.current?.text ?? '') + input;
       const startIdx = Math.max(acc.indexOf(PASTE_START), acc.indexOf(PASTE_START_BARE));
       if (pasteBufRef.current === null && startIdx > 0) {
         // START 之前的零散字符与粘贴合并进同一 chunk：按普通文本插入
-        handleChange(text + acc.slice(0, startIdx));
+        handleChange(base + acc.slice(0, startIdx));
+        base += acc.slice(0, startIdx);
         acc = acc.slice(startIdx);
       }
       // 剥掉 START（可能已被 Ink 吃掉 ESC，也可能没有）
@@ -143,16 +190,16 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
       }
       pasteBufRef.current = null;
       const cleaned = normalizePaste(acc.slice(0, endIdx));
-      if (cleaned.length > 0) handleChange(text + cleaned);
+      if (cleaned.length > 0) handleChange(base + cleaned);
       const residue = acc.slice(endIdx + endLen);
       if (residue.length === 0) return;
       if (/^[\r\n]+$/.test(residue)) {
         // 粘贴后紧跟的回车（与 END 合并进同一 data 事件）：按回车键提交
-        history.submit(text + cleaned);
+        history.submit(base + cleaned);
         return;
       }
       const extra = normalizePaste(residue);
-      if (extra.length > 0) handleChange(text + cleaned + extra);
+      if (extra.length > 0) handleChange(base + cleaned + extra);
       return;
     }
     if (key.tab && key.shift) {
@@ -161,12 +208,38 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
     }
     if (key.upArrow) {
       if (completion.handleArrow('up')) return;
-      history.recallUp();
+      if (text.length === 0) {
+        history.recallUp();
+        return;
+      }
+      // 有内容：跨行移动光标（文本编辑器语义）；折叠态先展开
+      if (collapsed && text.includes('\n')) {
+        setCollapsed(false);
+        return;
+      }
+      history.setCursor(cursorVerticalMove(text, cursor, -1));
       return;
     }
     if (key.downArrow) {
       if (completion.handleArrow('down')) return;
-      history.recallDown();
+      if (text.length === 0) {
+        history.recallDown();
+        return;
+      }
+      // 光标已在末行：折叠多行内容（与 ↑ 展开对偶，形成闭环）
+      const lastRow = cursorVerticalMove(text, cursor, 1);
+      if (lastRow === cursor && text.includes('\n')) {
+        setCollapsed(true);
+        return;
+      }
+      history.setCursor(lastRow);
+      return;
+    }
+    if (key.leftArrow || key.rightArrow) {
+      // 折叠态内容视为整体：横移键不动（先 ↑ 展开），避免在不可见位置插入
+      if (collapsed && text.includes('\n')) return;
+      const d = key.leftArrow ? -1 : 1;
+      history.setCursor(Math.min(Math.max(cursor + d, 0), text.length));
       return;
     }
     if (key.tab) {
@@ -197,7 +270,9 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
       return;
     }
     if (key.backspace || key.delete) {
-      handleChange(text.slice(0, -1));
+      // 删除光标前一字符；光标在 0 时不动
+      if (cursor === 0) return;
+      handleChange(text.slice(0, cursor - 1) + text.slice(cursor), cursor - 1);
       return;
     }
     if (key.ctrl && input === 'c') {
@@ -212,7 +287,7 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
         if (cleaned.length > 0) handleChange(text + cleaned);
         return;
       }
-      handleChange(text + input);
+      handleChange(text.slice(0, cursor) + input + text.slice(cursor));
     }
   }, { isActive: props.inputActive !== false });
 
@@ -227,8 +302,23 @@ export function InputBox(props: InputBoxProps): React.ReactElement {
       ) : null}
       <Box borderStyle="round" borderColor={props.busy ? 'gray' : 'cyan'} paddingX={1}>
         <Text color="cyan">❯ </Text>
-        <Text>{text}</Text>
-        <Text color="gray">▌</Text>
+        {collapsed && text.includes('\n') ? (() => {
+          const firstLine = text.split('\n')[0] ?? '';
+          const extra = text.split('\n').length - 1;
+          return (
+            <>
+              <Text>{firstLine}</Text>
+              <Text dimColor>{props.t('inputCollapsedSuffix').replace('{n}', String(extra))}</Text>
+              <Text color="gray">▌</Text>
+            </>
+          );
+        })() : (
+          <>
+            <Text>{text.slice(0, cursor)}</Text>
+            <Text color="gray">▌</Text>
+            <Text>{text.slice(cursor)}</Text>
+          </>
+        )}
       </Box>
       {panelOpen ? (
         <Text dimColor>
